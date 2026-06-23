@@ -1,0 +1,10 @@
+{
+  "name": "contentos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs 4179",
+    "start": "node server.mjs 4179"
+  }
+}

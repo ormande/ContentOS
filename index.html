@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ContentOS</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <aside class="sidebar" aria-label="Seções">
+        <div class="brand">
+          <div class="brand-mark">CO</div>
+          <div>
+            <h1>ContentOS</h1>
+            <p>central editorial</p>
+          </div>
+        </div>
+
+        <nav class="nav" id="sectionNav"></nav>
+
+        <section class="assistant-strip" aria-label="IA auxiliar">
+          <span>IA auxiliar</span>
+          <strong>Pronta para plugar</strong>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="search-wrap">
+            <label for="globalSearch">Busca</label>
+            <input id="globalSearch" type="search" placeholder="Buscar ideia, peça, texto ou arquivo" />
+          </div>
+
+          <div class="quick-actions">
+            <button id="newIdeaBtn" class="primary-action" type="button">Nova ideia</button>
+            <button id="newPieceBtn" class="ghost-action" type="button">Nova peça</button>
+          </div>
+        </header>
+
+        <section class="section-header">
+          <div>
+            <p id="sectionKicker" class="kicker"></p>
+            <h2 id="sectionTitle"></h2>
+          </div>
+          <p id="sectionMetric" class="metric"></p>
+        </section>
+
+        <section id="contentArea" class="content-area" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <template id="emptyStateTemplate">
+      <div class="empty-state">
+        <strong>Nada por aqui ainda.</strong>
+        <span>Comece por uma ideia solta ou por uma peça em produção.</span>
+      </div>
+    </template>
+
+    <script src="./src/app.js"></script>
+  </body>
+</html>
