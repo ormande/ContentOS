@@ -63,6 +63,17 @@ A aba Dashboard tem duas visões:
 - Geral: métricas agregadas e distribuição por formato.
 - Por conteúdo: lista filtrável por Reels, Posts, Stories, Carrosséis, Vídeos e Outros.
 
+
+## Meta Business Suite
+
+Para o Facebook Login retornar a conta correta, a configuração mais confiável deve ser feita pelo Meta Business Suite:
+
+1. Em `Contas > Páginas`, confirme que a Página do Facebook está no portfólio correto.
+2. Em `Contas > Contas do Instagram`, confirme que a conta profissional do Instagram está no mesmo portfólio.
+3. Em cada ativo, abra `Pessoas` e garanta que o perfil usado no login tenha `Acesso total`.
+4. Em `Ativos conectados`, confirme que a Página e a conta do Instagram estão vinculadas entre si.
+
+Esse caminho costuma ser mais claro que ajustar a conexão apenas pelo app do Instagram ou pela Página do Facebook. Para criadores usando o ContentOS no futuro, essa deve ser a checagem principal antes de conectar insights.
 ## Próximas etapas técnicas
 
 1. Fazer deploy na Vercel com as variáveis preenchidas.
