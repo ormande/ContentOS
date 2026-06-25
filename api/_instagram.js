@@ -128,7 +128,14 @@ export async function handleDashboard(response) {
     };
   });
 
-  const totals = contentItems.reduce((total, item) => addMetrics(total, item.metrics), normalizeMetrics());
+  const mediaTotals = contentItems.reduce((total, item) => addMetrics(total, item.metrics), normalizeMetrics());
+  const accountMetrics = normalizeMetrics(accountSnapshots[0]?.metrics);
+  const totals = {
+    ...mediaTotals,
+    impressions: accountMetrics.impressions || mediaTotals.impressions,
+    profileViews: accountMetrics.profileViews || mediaTotals.profileViews,
+    followers: accountMetrics.followers || mediaTotals.followers
+  };
   const byContentType = Object.values(contentItems.reduce((groups, item) => {
     const key = item.contentType || "unknown";
     groups[key] ||= { contentType: key, count: 0, metrics: normalizeMetrics() };
@@ -147,6 +154,7 @@ export async function handleDashboard(response) {
     } : null,
     lastSyncAt: account?.last_sync_at || accountSnapshots[0]?.captured_at || null,
     totals,
+    accountMetrics,
     byContentType,
     contentItems
   });

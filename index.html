@@ -8,37 +8,32 @@
   </head>
   <body>
     <div id="app" class="shell">
-      <aside class="sidebar" aria-label="Seções">
+      <aside class="sidebar" aria-label="SeÃ§Ãµes">
         <div class="brand">
           <div class="brand-mark">CO</div>
           <div class="brand-copy">
             <h1>ContentOS</h1>
             <p>central editorial</p>
           </div>
+          <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Recolher menu" aria-expanded="true">
+            <span aria-hidden="true">&#8249;</span>
+          </button>
         </div>
 
-        <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Recolher menu" aria-expanded="true">
-          <span aria-hidden="true">‹</span>
-        </button>
 
         <nav class="nav" id="sectionNav"></nav>
-
-        <section class="assistant-strip" aria-label="IA auxiliar">
-          <span>IA auxiliar</span>
-          <strong>Pronta para plugar</strong>
-        </section>
       </aside>
 
       <main class="workspace">
         <header class="topbar">
           <div class="search-wrap">
             <label for="globalSearch">Busca</label>
-            <input id="globalSearch" type="search" placeholder="Buscar ideia, vídeo, texto ou arquivo" />
+            <input id="globalSearch" type="search" placeholder="Buscar ideia, vÃ­deo, texto ou arquivo" />
           </div>
 
           <div class="quick-actions">
             <button id="newIdeaBtn" class="primary-action" type="button">Nova ideia</button>
-            <button id="newPieceBtn" class="ghost-action" type="button">Novo vídeo</button>
+            <button id="newPieceBtn" class="ghost-action" type="button">Novo vÃ­deo</button>
           </div>
         </header>
 
@@ -57,7 +52,7 @@
     <template id="emptyStateTemplate">
       <div class="empty-state">
         <strong>Nada por aqui ainda.</strong>
-        <span>Comece por uma ideia solta ou por um vídeo em produção.</span>
+        <span>Comece por uma ideia solta ou por um vÃ­deo em produÃ§Ã£o.</span>
       </div>
     </template>
 

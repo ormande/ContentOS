@@ -24,13 +24,22 @@ const libraryCategories = [
 ];
 
 let state = createEmptyState();
-let currentSection = window.location.hash.replace("#", "") || "ideas";
+let currentSection = window.location.hash.replace("#", "") || "dashboard";
 let currentLibraryCategory = libraryCategories[0].id;
 let isSaving = false;
 let isSidebarCollapsed = false;
 let instagramDashboard = createEmptyInstagramDashboard();
 let instagramView = "overview";
 let instagramContentType = "all";
+let instagramDatePreset = "30d";
+let instagramCustomStart = "";
+let instagramCustomEnd = "";
+let calendarState = {
+  open: false,
+  field: "start",
+  month: new Date().getMonth(),
+  year: new Date().getFullYear()
+};
 let isInstagramSyncing = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
 
@@ -342,7 +351,9 @@ function renderPublications(query) {
 }
 
 function renderDashboard(query) {
-  const contentItems = instagramDashboard.contentItems.filter(item => {
+  const dateRange = getInstagramDateRange();
+  const filteredItems = filterInstagramItemsByDate(instagramDashboard.contentItems, dateRange);
+  const contentItems = filteredItems.filter(item => {
     const matchesType = instagramContentType === "all" || item.contentType === instagramContentType;
     return matchesType && matchesQuery([
       item.caption,
@@ -360,10 +371,12 @@ function renderDashboard(query) {
           <button class="${instagramView === "content" ? "active" : ""}" type="button" data-instagram-view="content">Por conteúdo</button>
         </div>
         <div class="dashboard-actions">
-          <a class="ghost-action dashboard-connect" href="/api/instagram/connect">Conectar Instagram</a>
+          ${instagramDashboard.account ? "" : `<a class="ghost-action dashboard-connect" href="/api/instagram/connect">Conectar Instagram</a>`}
           <button class="primary-action" type="button" data-sync-instagram>${isInstagramSyncing ? "Sincronizando..." : "Atualizar insights"}</button>
         </div>
       </div>
+
+      ${renderInstagramDateFilter(dateRange)}
 
       ${instagramDashboard.isConfigured ? "" : `
         <div class="empty-state compact">
@@ -379,56 +392,64 @@ function renderDashboard(query) {
         </div>
       ` : ""}
 
-      ${instagramView === "overview" ? renderInstagramOverview() : renderInstagramContent(contentItems)}
+      ${instagramView === "overview" ? renderInstagramOverview(filteredItems) : renderInstagramContent(contentItems)}
     </div>
   `;
 }
 
-function renderInstagramOverview() {
-  const totals = instagramDashboard.totals;
-  const maxContentCount = Math.max(...instagramDashboard.byContentType.map(type => type.count), 1);
+function renderInstagramOverview(items) {
+  const mediaTotals = items.length
+    ? items.reduce((sum, item) => addInstagramMetrics(sum, item.metrics), createEmptyMetrics())
+    : instagramDashboard.totals;
+  const accountMetrics = instagramDashboard.accountMetrics || createEmptyMetrics();
+  const totals = {
+    ...mediaTotals,
+    impressions: accountMetrics.impressions || mediaTotals.impressions,
+    profileViews: accountMetrics.profileViews || mediaTotals.profileViews,
+    followers: accountMetrics.followers || mediaTotals.followers
+  };
+  const byContentType = groupInstagramItemsByType(items);
+  const maxContentCount = Math.max(...byContentType.map(type => type.count), 1);
 
   return `
-    <div class="insight-grid">
-      ${renderInsightCard("Impressões", totals.impressions)}
-      ${renderInsightCard("Alcance", totals.reach)}
-      ${renderInsightCard("Visualizações", totals.views)}
-      ${renderInsightCard("Visitas ao perfil", totals.profileViews)}
-      ${renderInsightCard("Seguidores", totals.followers)}
-      ${renderInsightCard("Curtidas", totals.likes)}
-      ${renderInsightCard("Comentários", totals.comments)}
-      ${renderInsightCard("Salvamentos", totals.saves)}
-      ${renderInsightCard("Compartilhamentos", totals.shares)}
+    <div class="insight-grid polished">
+      ${renderInsightCard("Impressões", totals.impressions, "chart", "teal")}
+      ${renderInsightCard("Alcance", totals.reach, "target", "blue")}
+      ${renderInsightCard("Visualizações", totals.views, "eye", "green")}
+      ${renderInsightCard("Visitas ao perfil", totals.profileViews, "user", "amber")}
+      ${renderInsightCard("Seguidores", totals.followers, "users", "violet")}
+      ${renderInsightCard("Curtidas", totals.likes, "heart", "rose")}
+      ${renderInsightCard("Comentários", totals.comments, "message", "cyan")}
+      ${renderInsightCard("Salvamentos", totals.saves, "bookmark", "olive")}
+      ${renderInsightCard("Compartilhamentos", totals.shares, "send", "orange")}
     </div>
 
     <div class="grid two dashboard-split">
-      <section class="panel">
+      <section class="panel insight-panel">
         <h3>Distribuição por formato</h3>
         <div class="insight-bars">
-          ${instagramDashboard.byContentType.length ? instagramDashboard.byContentType.map(item => `
+          ${byContentType.length ? byContentType.map(item => `
             <div class="insight-bar">
               <div><strong>${formatInstagramContentType(item.contentType)}</strong><span>${item.count} conteúdos</span></div>
               <meter min="0" max="${maxContentCount}" value="${item.count}"></meter>
             </div>
-          `).join("") : `<p>Nenhum conteúdo sincronizado ainda.</p>`}
+          `).join("") : `<p>Nenhum conteúdo sincronizado nesse período.</p>`}
         </div>
       </section>
 
-      <section class="panel">
-        <h3>Última sincronização</h3>
-        <p>${instagramDashboard.lastSyncAt ? formatDateTime(instagramDashboard.lastSyncAt) : "Ainda não sincronizado."}</p>
-        <p>${instagramDashboard.account?.username ? `Conta: @${instagramDashboard.account.username}` : "Nenhuma conta conectada."}</p>
+      <section class="panel insight-panel account-panel">
+        <h3>Conta conectada</h3>
+        <p>${instagramDashboard.account?.username ? `@${instagramDashboard.account.username}` : "Nenhuma conta conectada."}</p>
+        <small>Última sincronização: ${instagramDashboard.lastSyncAt ? formatDateTime(instagramDashboard.lastSyncAt) : "ainda não sincronizado"}</small>
       </section>
     </div>
   `;
 }
-
 function renderInstagramContent(items) {
   const typeTabs = [
     ["all", "Todos"],
     ["reel", "Reels"],
     ["post", "Posts"],
-    ["story", "Stories"],
     ["carousel", "Carrosséis"],
     ["video", "Vídeos"],
     ["unknown", "Outros"]
@@ -463,17 +484,84 @@ function renderInstagramContent(items) {
   `;
 }
 
-function renderInsightCard(label, value) {
+function renderInsightCard(label, value, iconName = "chart", tone = "teal") {
   return `
-    <article class="insight-card">
-      <span>${label}</span>
+    <article class="insight-card tone-${tone}">
+      <div class="insight-card-top">
+        <span class="insight-icon">${icon(iconName)}</span>
+        <span>${label}</span>
+      </div>
       <strong>${formatNumber(value)}</strong>
     </article>
   `;
 }
-
 function renderMiniMetric(label, value) {
   return `<span><strong>${formatNumber(value)}</strong>${label}</span>`;
+}
+
+function renderInstagramDateFilter(dateRange) {
+  const presets = [
+    ["today", "Hoje"],
+    ["yesterday", "Ontem"],
+    ["7d", "7d"],
+    ["15d", "15d"],
+    ["30d", "30d"],
+    ["all", "Tudo"],
+    ["custom", "Personalizado"]
+  ];
+
+  return `
+    <div class="date-filter">
+      <div class="date-presets" aria-label="Filtro de data dos insights">
+        ${presets.map(([value, label]) => `
+          <button class="${instagramDatePreset === value ? "active" : ""}" type="button" data-date-preset="${value}">${label}</button>
+        `).join("")}
+      </div>
+      <div class="date-summary">
+        <span>${formatDateRangeLabel(dateRange)}</span>
+        ${instagramDatePreset === "custom" ? `
+          <button class="ghost-action compact" type="button" data-calendar-field="start">${instagramCustomStart ? formatShortDate(instagramCustomStart) : "Início"}</button>
+          <button class="ghost-action compact" type="button" data-calendar-field="end">${instagramCustomEnd ? formatShortDate(instagramCustomEnd) : "Fim"}</button>
+        ` : ""}
+      </div>
+      ${calendarState.open && instagramDatePreset === "custom" ? renderCalendar() : ""}
+    </div>
+  `;
+}
+
+function renderCalendar() {
+  const monthDate = new Date(calendarState.year, calendarState.month, 1);
+  const firstWeekday = monthDate.getDay();
+  const totalDays = new Date(calendarState.year, calendarState.month + 1, 0).getDate();
+  const selected = calendarState.field === "start" ? instagramCustomStart : instagramCustomEnd;
+  const cells = [];
+
+  for (let i = 0; i < firstWeekday; i += 1) {
+    cells.push(`<span class="calendar-empty"></span>`);
+  }
+
+  for (let day = 1; day <= totalDays; day += 1) {
+    const value = toDateInputValue(new Date(calendarState.year, calendarState.month, day));
+    cells.push(`
+      <button class="${selected === value ? "active" : ""}" type="button" data-calendar-day="${value}">
+        ${day}
+      </button>
+    `);
+  }
+
+  return `
+    <div class="calendar-popover">
+      <div class="calendar-head">
+        <button type="button" data-calendar-nav="-1" aria-label="Mês anterior">${icon("chevron")}</button>
+        <strong>${new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(monthDate)}</strong>
+        <button type="button" data-calendar-nav="1" aria-label="Próximo mês">${icon("chevron")}</button>
+      </div>
+      <div class="calendar-weekdays">
+        <span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span>
+      </div>
+      <div class="calendar-grid">${cells.join("")}</div>
+    </div>
+  `;
 }
 
 function renderLibrary(query) {
@@ -611,6 +699,55 @@ function attachSectionEvents() {
 }
 
 function attachDashboardEvents() {
+  document.querySelectorAll("[data-date-preset]").forEach(button => {
+    const presetButton = /** @type {HTMLButtonElement} */ (button);
+    presetButton.addEventListener("click", () => {
+      instagramDatePreset = presetButton.dataset.datePreset || "30d";
+      calendarState.open = instagramDatePreset === "custom";
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-calendar-field]").forEach(button => {
+    const fieldButton = /** @type {HTMLButtonElement} */ (button);
+    fieldButton.addEventListener("click", () => {
+      calendarState.field = fieldButton.dataset.calendarField || "start";
+      calendarState.open = true;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-calendar-nav]").forEach(button => {
+    const navButton = /** @type {HTMLButtonElement} */ (button);
+    navButton.addEventListener("click", () => {
+      calendarState.month += Number(navButton.dataset.calendarNav || 0);
+      if (calendarState.month < 0) {
+        calendarState.month = 11;
+        calendarState.year -= 1;
+      }
+      if (calendarState.month > 11) {
+        calendarState.month = 0;
+        calendarState.year += 1;
+      }
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-calendar-day]").forEach(button => {
+    const dayButton = /** @type {HTMLButtonElement} */ (button);
+    dayButton.addEventListener("click", () => {
+      const value = dayButton.dataset.calendarDay || "";
+      if (calendarState.field === "start") {
+        instagramCustomStart = value;
+        calendarState.field = "end";
+      } else {
+        instagramCustomEnd = value;
+        calendarState.open = false;
+      }
+      render();
+    });
+  });
+
   document.querySelectorAll("[data-instagram-view]").forEach(button => {
     const viewButton = /** @type {HTMLButtonElement} */ (button);
     viewButton.addEventListener("click", () => {
@@ -754,9 +891,115 @@ function createEmptyInstagramDashboard() {
       saves: 0,
       shares: 0
     },
+    accountMetrics: createEmptyMetrics(),
     byContentType: [],
     contentItems: []
   };
+}
+
+function createEmptyMetrics() {
+  return {
+    reach: 0,
+    impressions: 0,
+    profileViews: 0,
+    followers: 0,
+    views: 0,
+    likes: 0,
+    comments: 0,
+    saves: 0,
+    shares: 0
+  };
+}
+
+function addInstagramMetrics(left, right = {}) {
+  return {
+    reach: Number(left.reach || 0) + Number(right.reach || 0),
+    impressions: Number(left.impressions || 0) + Number(right.impressions || 0),
+    profileViews: Number(left.profileViews || 0) + Number(right.profileViews || 0),
+    followers: Math.max(Number(left.followers || 0), Number(right.followers || 0)),
+    views: Number(left.views || 0) + Number(right.views || 0),
+    likes: Number(left.likes || 0) + Number(right.likes || 0),
+    comments: Number(left.comments || 0) + Number(right.comments || 0),
+    saves: Number(left.saves || 0) + Number(right.saves || 0),
+    shares: Number(left.shares || 0) + Number(right.shares || 0)
+  };
+}
+
+function groupInstagramItemsByType(items) {
+  return Object.values(items.reduce((groups, item) => {
+    const key = item.contentType || "unknown";
+    groups[key] ||= { contentType: key, count: 0 };
+    groups[key].count += 1;
+    return groups;
+  }, {}));
+}
+
+function getInstagramDateRange() {
+  const today = startOfDay(new Date());
+  const yesterday = addDays(today, -1);
+
+  if (instagramDatePreset === "today") return { start: today, end: endOfDay(today) };
+  if (instagramDatePreset === "yesterday") return { start: yesterday, end: endOfDay(yesterday) };
+  if (instagramDatePreset === "7d") return { start: addDays(today, -6), end: endOfDay(today) };
+  if (instagramDatePreset === "15d") return { start: addDays(today, -14), end: endOfDay(today) };
+  if (instagramDatePreset === "30d") return { start: addDays(today, -29), end: endOfDay(today) };
+  if (instagramDatePreset === "custom") {
+    return {
+      start: instagramCustomStart ? startOfDay(new Date(`${instagramCustomStart}T00:00:00`)) : null,
+      end: instagramCustomEnd ? endOfDay(new Date(`${instagramCustomEnd}T00:00:00`)) : null
+    };
+  }
+
+  return { start: null, end: null };
+}
+
+function filterInstagramItemsByDate(items, range) {
+  return items.filter(item => {
+    if (!range.start && !range.end) return true;
+    if (!item.publishedAt) return false;
+
+    const date = new Date(item.publishedAt);
+    if (range.start && date < range.start) return false;
+    if (range.end && date > range.end) return false;
+    return true;
+  });
+}
+
+function startOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function endOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function addDays(date, amount) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function toDateInputValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatShortDate(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(new Date(`${value}T00:00:00`));
+}
+
+function formatDateRangeLabel(range) {
+  if (instagramDatePreset === "all") return "Todo o histórico sincronizado";
+  if (instagramDatePreset === "custom") {
+    const start = instagramCustomStart ? formatShortDate(instagramCustomStart) : "início";
+    const end = instagramCustomEnd ? formatShortDate(instagramCustomEnd) : "fim";
+    return `${start} - ${end}`;
+  }
+
+  return `${formatShortDate(toDateInputValue(range.start))} - ${formatShortDate(toDateInputValue(range.end))}`;
 }
 
 function formatInstagramContentType(type) {
@@ -810,6 +1053,12 @@ function icon(name) {
     bookmark: `<path d="M6 3h12a1 1 0 0 1 1 1v18l-7-4-7 4V4a1 1 0 0 1 1-1Z"/>`,
     spark: `<path d="M12 2v5"/><path d="M12 17v5"/><path d="M4.2 4.2 7.8 7.8"/><path d="m16.2 16.2 3.6 3.6"/><path d="M2 12h5"/><path d="M17 12h5"/><path d="m4.2 19.8 3.6-3.6"/><path d="m16.2 7.8 3.6-3.6"/>`,
     chart: `<path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5" rx="1"/><rect x="12" y="7" width="3" height="9" rx="1"/><rect x="17" y="3" width="3" height="13" rx="1"/>`,
+    eye: `<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>`,
+    user: `<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/>`,
+    users: `<path d="M16 21a6 6 0 0 0-12 0"/><circle cx="10" cy="8" r="4"/><path d="M22 21a5 5 0 0 0-5-5"/><path d="M16 4a4 4 0 0 1 0 8"/>`,
+    heart: `<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/>`,
+    message: `<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z"/>`,
+    chevron: `<path d="m15 18-6-6 6-6"/>`,
     zap: `<path d="M13 2 4 14h7l-1 8 10-13h-7l1-7Z"/>`,
     wave: `<path d="M3 12c2 0 2-5 4-5s2 10 4 10 2-10 4-10 2 5 4 5h2"/>`,
     music: `<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>`,
@@ -836,7 +1085,7 @@ function bindGlobalEvents() {
     document.querySelectorAll("[data-dropdown].open").forEach(closeDropdown);
   });
   window.addEventListener("hashchange", () => {
-    currentSection = window.location.hash.replace("#", "") || "ideas";
+    currentSection = window.location.hash.replace("#", "") || "dashboard";
     render();
   });
 }
