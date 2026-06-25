@@ -32,6 +32,7 @@ let instagramDashboard = createEmptyInstagramDashboard();
 let instagramView = "overview";
 let instagramContentType = "all";
 let isInstagramSyncing = false;
+let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
 
 const shell = /** @type {HTMLElement} */ (document.querySelector("#app"));
 const nav = /** @type {HTMLElement} */ (document.querySelector("#sectionNav"));
@@ -371,6 +372,13 @@ function renderDashboard(query) {
         </div>
       `}
 
+      ${instagramError ? `
+        <div class="empty-state compact">
+          <strong>Não foi possível concluir a conexão com o Instagram.</strong>
+          <span>${escapeHtml(instagramError)}</span>
+        </div>
+      ` : ""}
+
       ${instagramView === "overview" ? renderInstagramOverview() : renderInstagramContent(contentItems)}
     </div>
   `;
@@ -623,6 +631,7 @@ function attachDashboardEvents() {
   if (syncButton) {
     syncButton.addEventListener("click", async () => {
       isInstagramSyncing = true;
+      instagramError = "";
       render();
 
       try {
@@ -630,6 +639,7 @@ function attachDashboardEvents() {
         instagramDashboard = await loadInstagramDashboard();
       } catch (error) {
         console.error(error);
+        instagramError = error.message || "Falha ao sincronizar insights.";
       } finally {
         isInstagramSyncing = false;
         render();
@@ -692,6 +702,15 @@ function splitList(value) {
     .split(",")
     .map(item => item.trim())
     .filter(Boolean);
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function splitHashtags(value) {

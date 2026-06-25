@@ -181,7 +181,7 @@ export async function handleCallback(request, response) {
     response.redirect(302, "/#dashboard");
   } catch (error) {
     console.error("Instagram callback failed", error);
-    response.redirect(302, `/#dashboard?instagram_error=${encodeURIComponent(error.message)}`);
+    response.redirect(302, `/?instagram_error=${encodeURIComponent(error.message)}#dashboard`);
   }
 }
 
@@ -500,7 +500,7 @@ function getInstagramAppSecret() {
 }
 
 function getGraphBaseUrlForAccount(account) {
-  return account.auth_provider === "facebook" ? facebookGraphBaseUrl : instagramGraphBaseUrl;
+  return account.auth_provider === "instagram" ? instagramGraphBaseUrl : facebookGraphBaseUrl;
 }
 
 function normalizeInsightPayload(payload = {}) {
