@@ -52,6 +52,7 @@ Fluxo padrão atual com Facebook Login e Página conectada ao Instagram:
 
 - `instagram_basic`
 - `instagram_manage_insights`
+- `business_management`
 - `pages_show_list`
 - `pages_read_engagement`
 
