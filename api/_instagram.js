@@ -201,16 +201,16 @@ async function connectWithFacebookLogin(supabase, code) {
   }, facebookGraphBaseUrl);
 
   const pages = await graphGet("/me/accounts", {
-    fields: "id,name,access_token,instagram_business_account{id,username,profile_picture_url,name}",
+    fields: "id,name,access_token,instagram_business_account{id,username,profile_picture_url,name},connected_instagram_account{id,username,profile_picture_url,name}",
     access_token: longToken.access_token
   }, facebookGraphBaseUrl);
 
-  const page = (pages.data || []).find(item => item.instagram_business_account);
-  if (!page) {
-    throw new Error("Nenhuma conta Instagram Business ou Creator conectada às páginas deste usuário.");
+  const connectedPage = await findInstagramPage(pages.data || [], longToken.access_token);
+  if (!connectedPage) {
+    throw new Error("Nenhuma conta Instagram Business ou Creator conectada às páginas retornadas pela Meta. Confirme se a conta profissional do Instagram está vinculada à Página selecionada e se seu usuário administra essa Página.");
   }
 
-  const instagramAccount = page.instagram_business_account;
+  const { page, instagramAccount } = connectedPage;
   const expiresAt = longToken.expires_in
     ? new Date(Date.now() + Number(longToken.expires_in) * 1000).toISOString()
     : null;
@@ -233,6 +233,37 @@ async function connectWithFacebookLogin(supabase, code) {
   if (error) throw error;
 
   return data;
+}
+
+async function findInstagramPage(pages, userAccessToken) {
+  for (const page of pages) {
+    const expandedAccount = page.instagram_business_account || page.connected_instagram_account;
+    if (expandedAccount) {
+      return { page, instagramAccount: expandedAccount };
+    }
+
+    try {
+      const pageDetails = await graphGet(`/${page.id}`, {
+        fields: "id,name,instagram_business_account{id,username,profile_picture_url,name},connected_instagram_account{id,username,profile_picture_url,name}",
+        access_token: page.access_token || userAccessToken
+      }, facebookGraphBaseUrl);
+
+      const instagramAccount = pageDetails.instagram_business_account || pageDetails.connected_instagram_account;
+      if (instagramAccount) {
+        return {
+          page: {
+            ...page,
+            ...pageDetails
+          },
+          instagramAccount
+        };
+      }
+    } catch (error) {
+      console.warn(`Could not inspect Facebook page ${page.id}`, error);
+    }
+  }
+
+  return null;
 }
 
 async function connectWithInstagramLogin(supabase, code) {
