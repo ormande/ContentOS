@@ -11,11 +11,15 @@
       <aside class="sidebar" aria-label="Seções">
         <div class="brand">
           <div class="brand-mark">CO</div>
-          <div>
+          <div class="brand-copy">
             <h1>ContentOS</h1>
             <p>central editorial</p>
           </div>
         </div>
+
+        <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Recolher menu" aria-expanded="true">
+          <span aria-hidden="true">‹</span>
+        </button>
 
         <nav class="nav" id="sectionNav"></nav>
 
@@ -29,12 +33,12 @@
         <header class="topbar">
           <div class="search-wrap">
             <label for="globalSearch">Busca</label>
-            <input id="globalSearch" type="search" placeholder="Buscar ideia, peça, texto ou arquivo" />
+            <input id="globalSearch" type="search" placeholder="Buscar ideia, vídeo, texto ou arquivo" />
           </div>
 
           <div class="quick-actions">
             <button id="newIdeaBtn" class="primary-action" type="button">Nova ideia</button>
-            <button id="newPieceBtn" class="ghost-action" type="button">Nova peça</button>
+            <button id="newPieceBtn" class="ghost-action" type="button">Novo vídeo</button>
           </div>
         </header>
 
@@ -53,10 +57,12 @@
     <template id="emptyStateTemplate">
       <div class="empty-state">
         <strong>Nada por aqui ainda.</strong>
-        <span>Comece por uma ideia solta ou por uma peça em produção.</span>
+        <span>Comece por uma ideia solta ou por um vídeo em produção.</span>
       </div>
     </template>
 
-    <script src="./src/app.js"></script>
+    <script src="./contentos-config.js"></script>
+    <script src="./node_modules/@supabase/supabase-js/dist/umd/supabase.js"></script>
+    <script type="module" src="./src/app.js"></script>
   </body>
 </html>

@@ -1,178 +1,41 @@
-const STORAGE_KEY = "contentos.workspace.v1";
-
-const seedState = {
-  ideas: [
-    {
-      id: "idea-001",
-      title: "Rotina de bastidor antes de gravar",
-      source: "nota solta",
-      angle: "Mostrar preparação real sem parecer tutorial engessado",
-      tags: ["bastidor", "processo", "criador"],
-      priority: "alta",
-      createdAt: "2026-06-23"
-    },
-    {
-      id: "idea-002",
-      title: "Erros comuns ao transformar vídeo longo em corte",
-      source: "pergunta recorrente",
-      angle: "Lista rápida com exemplos visuais",
-      tags: ["cortes", "shorts", "retencao"],
-      priority: "média",
-      createdAt: "2026-06-23"
-    }
-  ],
-  pieces: [
-    {
-      id: "piece-001",
-      title: "Como organizar versões de vídeo",
-      format: "short vertical",
-      moment: "edição",
-      owner: "Você",
-      due: "2026-06-28",
-      ideaId: "idea-002",
-      materials: ["bruto-01.mov", "editado-sem-legenda.mp4"],
-      textIds: ["text-001"],
-      publicationIds: []
-    }
-  ],
-  texts: [
-    {
-      id: "text-001",
-      pieceId: "piece-001",
-      platform: "instagram",
-      title: "Organização de versões sem perder arquivo",
-      body: "Se você também vive entre vídeo bruto, editado, legendado e versão final, salve este fluxo para não se perder na produção.",
-      seoTerms: ["organização de conteúdo", "versões de vídeo", "produção de vídeos"],
-      hashtags: ["#conteudo", "#videomaker", "#criadores", "#organizacao", "#shorts"]
-    },
-    {
-      id: "text-002",
-      pieceId: "piece-001",
-      platform: "shorts",
-      title: "Organize versões de vídeo",
-      body: "Fluxo simples para separar bruto, editado, legendado e final sem perder nada.",
-      seoTerms: ["versões de vídeo", "produção de conteúdo"],
-      hashtags: ["#Shorts"]
-    }
-  ],
-  files: [
-    {
-      id: "file-001",
-      pieceId: "piece-001",
-      name: "editado-sem-legenda.mp4",
-      kind: "vídeo editado",
-      version: "sem legenda",
-      location: "Pasta local",
-      updatedAt: "2026-06-23"
-    },
-    {
-      id: "file-002",
-      pieceId: "piece-001",
-      name: "bruto-01.mov",
-      kind: "vídeo bruto",
-      version: "original",
-      location: "Pasta local",
-      updatedAt: "2026-06-23"
-    }
-  ],
-  publications: [],
-  library: [
-    {
-      id: "lib-001",
-      name: "Formato: erro comum + correção",
-      type: "estrutura",
-      reuseFor: "TikTok, Reels, Shorts",
-      notes: "Começa com erro específico, mostra consequência, fecha com ação prática."
-    }
-  ],
-  ai: {
-    enabled: false,
-    provider: null,
-    plannedHooks: [
-      "sugerir próximos passos da peça",
-      "revisar SEO e hashtags",
-      "adaptar legenda por plataforma",
-      "encontrar peças incompletas"
-    ]
-  }
-};
-
-const platformRules = {
-  instagram: {
-    label: "Instagram",
-    hashtagLimit: 5,
-    characterLimit: 2200,
-    note: "até 5 hashtags"
-  },
-  tiktok: {
-    label: "TikTok",
-    hashtagLimit: Infinity,
-    characterLimit: 4000,
-    note: "hashtags livres"
-  },
-  shorts: {
-    label: "YouTube Shorts",
-    hashtagLimit: 3,
-    characterLimit: 150,
-    note: "até 150 caracteres"
-  }
-};
-
-const assistantGateway = {
-  isEnabled(state) {
-    return Boolean(state.ai?.enabled);
-  },
-
-  async suggestNextSteps() {
-    return { status: "disabled", suggestions: [] };
-  },
-
-  async improveCaption() {
-    return { status: "disabled", caption: null };
-  },
-
-  async auditWorkspace() {
-    return { status: "disabled", findings: [] };
-  }
-};
-
-function loadState() {
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (!stored) return clone(seedState);
-
-  try {
-    return { ...clone(seedState), ...JSON.parse(stored) };
-  } catch {
-    return clone(seedState);
-  }
-}
-
-function saveState(state) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function createId(prefix) {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
+import { assistantGateway } from "./ai/assistantGateway.js";
+import { loadInstagramDashboard, syncInstagramInsights } from "./data/instagramInsights.js";
+import { createEmptyState, createId, loadState, platformRules, saveState } from "./data/store.js";
 
 const sections = [
-  { id: "ideas", label: "Ideias", kicker: "captura", title: "Ideias", metric: state => `${state.ideas.length} ideias` },
-  { id: "pieces", label: "Peças", kicker: "produção", title: "Peças em movimento", metric: state => `${state.pieces.length} peças` },
-  { id: "texts", label: "Textos", kicker: "distribuição", title: "Legendas por plataforma", metric: state => `${state.texts.length} textos` },
-  { id: "files", label: "Arquivos", kicker: "materiais", title: "Versões e arquivos", metric: state => `${state.files.length} arquivos` },
-  { id: "publications", label: "Publicações", kicker: "histórico", title: "Saídas publicadas", metric: state => `${state.publications.length} registros` },
-  { id: "library", label: "Biblioteca", kicker: "reaproveitamento", title: "Formatos e referências", metric: state => `${state.library.length} itens` },
-  { id: "assistant", label: "IA auxiliar", kicker: "arquitetura", title: "Assistente auxiliar", metric: () => "desativada" }
+  { id: "dashboard", label: "Dashboard", icon: "chart", kicker: "instagram", title: "Insights do Instagram", metric: () => dashboardMetric() },
+  { id: "ideas", label: "Ideias", icon: "lightbulb", kicker: "captura", title: "Ideias", metric: state => `${state.ideas.length} ideias` },
+  { id: "pieces", label: "Vídeos", icon: "layers", kicker: "produção", title: "Vídeos em movimento", metric: state => `${state.pieces.length} vídeos` },
+  { id: "texts", label: "Legendas", icon: "text", kicker: "distribuição", title: "Legendas por plataforma", metric: state => `${state.texts.length} legendas` },
+  { id: "files", label: "Arquivos", icon: "folder", kicker: "materiais", title: "Versões e arquivos", metric: state => `${state.files.length} arquivos` },
+  { id: "publications", label: "Publicações", icon: "send", kicker: "histórico", title: "Saídas publicadas", metric: state => `${state.publications.length} registros` },
+  { id: "library", label: "Biblioteca", icon: "bookmark", kicker: "reaproveitamento", title: "Biblioteca criativa", metric: state => `${state.library.length} itens` },
+  { id: "assistant", label: "IA auxiliar", icon: "spark", kicker: "arquitetura", title: "Assistente auxiliar", metric: () => "desativada" }
 ];
 
-let state = loadState();
-let currentSection = window.location.hash.replace("#", "") || "ideas";
+const libraryCategories = [
+  { id: "gancho", label: "Gancho", icon: "zap" },
+  { id: "efeito_sonoro", label: "Efeito sonoro", icon: "wave" },
+  { id: "musica", label: "Música", icon: "music" },
+  { id: "formato", label: "Formato", icon: "layout" },
+  { id: "angulo_camera", label: "Ângulo de câmera", icon: "camera" },
+  { id: "cta", label: "CTA", icon: "target" },
+  { id: "estrutura_roteiro", label: "Estrutura de roteiro", icon: "list" }
+];
 
+let state = createEmptyState();
+let currentSection = window.location.hash.replace("#", "") || "ideas";
+let currentLibraryCategory = libraryCategories[0].id;
+let isSaving = false;
+let isSidebarCollapsed = false;
+let instagramDashboard = createEmptyInstagramDashboard();
+let instagramView = "overview";
+let instagramContentType = "all";
+let isInstagramSyncing = false;
+
+const shell = document.querySelector("#app");
 const nav = document.querySelector("#sectionNav");
+const sidebarToggle = document.querySelector("#sidebarToggle");
 const contentArea = document.querySelector("#contentArea");
 const sectionKicker = document.querySelector("#sectionKicker");
 const sectionTitle = document.querySelector("#sectionTitle");
@@ -181,9 +44,41 @@ const globalSearch = document.querySelector("#globalSearch");
 const newIdeaBtn = document.querySelector("#newIdeaBtn");
 const newPieceBtn = document.querySelector("#newPieceBtn");
 
-function persistAndRender() {
-  saveState(state);
+async function init() {
+  contentArea.innerHTML = `<div class="empty-state"><strong>Carregando ContentOS...</strong><span>Buscando dados no Supabase.</span></div>`;
+
+  try {
+    state = await loadState();
+  } catch (error) {
+    console.error(error);
+    contentArea.innerHTML = `<div class="empty-state"><strong>Não foi possível carregar o Supabase.</strong><span>Confira o schema e as variáveis do .env.</span></div>`;
+    return;
+  }
+
+  try {
+    instagramDashboard = await loadInstagramDashboard();
+  } catch (error) {
+    console.warn(error);
+    instagramDashboard = createEmptyInstagramDashboard();
+  }
+
+  bindGlobalEvents();
   render();
+}
+
+async function persistAndRender() {
+  render();
+  isSaving = true;
+
+  try {
+    await saveState(state);
+  } catch (error) {
+    console.error(error);
+    contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state"><strong>Erro ao salvar.</strong><span>Confira a conexão com o Supabase.</span></div>`);
+  } finally {
+    isSaving = false;
+    updateMetric();
+  }
 }
 
 function setSection(sectionId) {
@@ -195,7 +90,10 @@ function setSection(sectionId) {
 function renderNav() {
   nav.innerHTML = sections.map(section => `
     <button class="nav-item ${section.id === currentSection ? "active" : ""}" type="button" data-section="${section.id}">
-      <span>${section.label}</span>
+      <span class="nav-label">
+        ${icon(section.icon)}
+        <span class="nav-text">${section.label}</span>
+      </span>
       <small>${section.metric(state)}</small>
     </button>
   `).join("");
@@ -209,11 +107,12 @@ function render() {
   const section = sections.find(item => item.id === currentSection) || sections[0];
   sectionKicker.textContent = section.kicker;
   sectionTitle.textContent = section.title;
-  sectionMetric.textContent = section.metric(state);
+  updateMetric(section);
   renderNav();
 
   const query = globalSearch.value.trim().toLowerCase();
   const renderers = {
+    dashboard: renderDashboard,
     ideas: renderIdeas,
     pieces: renderPieces,
     texts: renderTexts,
@@ -225,6 +124,11 @@ function render() {
 
   contentArea.innerHTML = renderers[section.id](query);
   attachSectionEvents();
+}
+
+function updateMetric(activeSection) {
+  const section = activeSection || sections.find(item => item.id === currentSection) || sections[0];
+  sectionMetric.textContent = isSaving ? "salvando..." : section.metric(state);
 }
 
 function matchesQuery(values, query) {
@@ -258,7 +162,6 @@ function renderDropdown({ name, label, value, options }) {
 
 function renderIdeas(query) {
   const ideas = state.ideas.filter(idea => matchesQuery([idea.title, idea.source, idea.angle, idea.tags.join(" ")], query));
-  if (!ideas.length) return emptyState();
 
   return `
     <div class="grid two">
@@ -282,7 +185,7 @@ function renderIdeas(query) {
       </form>
 
       <div class="stack">
-        ${ideas.map(idea => `
+        ${ideas.length ? ideas.map(idea => `
           <article class="item-card">
             <div class="item-topline">
               <span>${idea.source || "ideia"}</span>
@@ -291,9 +194,9 @@ function renderIdeas(query) {
             <h3>${idea.title}</h3>
             <p>${idea.angle}</p>
             <div class="tag-row">${idea.tags.map(tag => `<span>${tag}</span>`).join("")}</div>
-            <button class="ghost-action compact" type="button" data-promote-idea="${idea.id}">Virar peça</button>
+            <button class="ghost-action compact" type="button" data-promote-idea="${idea.id}">Virar vídeo</button>
           </article>
-        `).join("")}
+        `).join("") : emptyState()}
       </div>
     </div>
   `;
@@ -306,7 +209,7 @@ function renderPieces(query) {
   return `
     <div class="table-surface">
       <div class="table-row table-head">
-        <span>Peça</span><span>Formato</span><span>Momento</span><span>Prazo</span><span>Material</span>
+        <span>Vídeo</span><span>Formato</span><span>Momento</span><span>Prazo</span><span>Legendas</span><span>Material</span>
       </div>
       ${pieces.map(piece => `
         <article class="table-row">
@@ -314,6 +217,7 @@ function renderPieces(query) {
           <span>${piece.format}</span>
           <span><mark>${piece.moment}</mark></span>
           <span>${piece.due || "sem data"}</span>
+          <span>${countLinkedTexts(piece.id)} legendas</span>
           <span>${piece.materials.length} arquivos</span>
         </article>
       `).join("")}
@@ -332,7 +236,7 @@ function renderTexts(query) {
 
   return `
     <div class="platform-rules">
-      ${Object.entries(platformRules).map(([key, rule]) => `
+      ${Object.entries(platformRules).map(([, rule]) => `
         <div class="rule-card">
           <strong>${rule.label}</strong>
           <span>${rule.note}</span>
@@ -343,7 +247,7 @@ function renderTexts(query) {
 
     <div class="grid two">
       <form class="panel form-panel" id="textForm">
-        <h3>Novo texto</h3>
+        <h3>Nova legenda</h3>
         ${renderDropdown({
           name: "platform",
           label: "Plataforma",
@@ -354,11 +258,20 @@ function renderTexts(query) {
             { value: "shorts", label: "YouTube Shorts" }
           ]
         })}
+        ${renderDropdown({
+          name: "pieceId",
+          label: "Vídeo vinculado",
+          value: "__none",
+          options: [
+            { value: "__none", label: "Sem vídeo vinculado" },
+            ...state.pieces.map(piece => ({ value: piece.id, label: piece.title }))
+          ]
+        })}
         <input name="title" placeholder="Título interno" required />
         <textarea name="body" placeholder="Legenda otimizada"></textarea>
         <input name="seoTerms" placeholder="SEO separado por vírgula" />
         <input name="hashtags" placeholder="hashtags separadas por espaço" />
-        <button class="primary-action" type="submit">Salvar texto</button>
+        <button class="primary-action" type="submit">Salvar legenda</button>
       </form>
 
       <div class="stack">
@@ -382,6 +295,7 @@ function renderTextCard(text) {
         <strong class="${characterStatus}">${count}/${rule.characterLimit}</strong>
       </div>
       <h3>${text.title}</h3>
+      <small class="linked-video">Vídeo: ${findPieceTitle(text.pieceId)}</small>
       <p>${text.body}</p>
       <div class="keyword-line">${text.seoTerms.map(term => `<span>${term}</span>`).join("")}</div>
       <div class="tag-row ${hashtagStatus}">${text.hashtags.map(tag => `<span>${tag}</span>`).join("")}</div>
@@ -400,7 +314,7 @@ function renderFiles(query) {
           <span>${file.kind}</span>
           <h3>${file.name}</h3>
           <p>${file.version}</p>
-          <small>${file.location} · ${file.updatedAt}</small>
+          <small>${file.location} - ${file.updatedAt}</small>
         </article>
       `).join("")}
     </div>
@@ -411,31 +325,185 @@ function renderPublications(query) {
   const publications = state.publications.filter(publication => matchesQuery([
     publication.platform,
     publication.url,
-    publication.date,
-    publication.pieceTitle
+    publication.publishedAt,
+    findPieceTitle(publication.pieceId)
   ], query));
   if (!publications.length) return emptyState();
 
   return `<div class="stack">${publications.map(publication => `
     <article class="item-card">
-      <div class="item-topline"><span>${publication.platform}</span><strong>${publication.date}</strong></div>
-      <h3>${publication.pieceTitle}</h3>
+      <div class="item-topline"><span>${publication.platform}</span><strong>${publication.publishedAt || "sem data"}</strong></div>
+      <h3>${findPieceTitle(publication.pieceId)}</h3>
       <p>${publication.url}</p>
     </article>
   `).join("")}</div>`;
 }
 
-function renderLibrary(query) {
-  const items = state.library.filter(item => matchesQuery([item.name, item.type, item.reuseFor, item.notes], query));
-  if (!items.length) return emptyState();
+function renderDashboard(query) {
+  const contentItems = instagramDashboard.contentItems.filter(item => {
+    const matchesType = instagramContentType === "all" || item.contentType === instagramContentType;
+    return matchesType && matchesQuery([
+      item.caption,
+      item.permalink,
+      item.linkedVideoTitle,
+      item.contentType
+    ], query);
+  });
 
-  return `<div class="grid three">${items.map(item => `
-    <article class="item-card">
-      <div class="item-topline"><span>${item.type}</span><strong>${item.reuseFor}</strong></div>
-      <h3>${item.name}</h3>
-      <p>${item.notes}</p>
+  return `
+    <div class="dashboard-page">
+      <div class="dashboard-toolbar">
+        <div class="segmented-control" aria-label="Visão dos insights">
+          <button class="${instagramView === "overview" ? "active" : ""}" type="button" data-instagram-view="overview">Geral</button>
+          <button class="${instagramView === "content" ? "active" : ""}" type="button" data-instagram-view="content">Por conteúdo</button>
+        </div>
+        <div class="dashboard-actions">
+          <a class="ghost-action dashboard-connect" href="/api/instagram/connect">Conectar Instagram</a>
+          <button class="primary-action" type="button" data-sync-instagram>${isInstagramSyncing ? "Sincronizando..." : "Atualizar insights"}</button>
+        </div>
+      </div>
+
+      ${instagramDashboard.isConfigured ? "" : `
+        <div class="empty-state compact">
+          <strong>Integração pronta para configurar.</strong>
+          <span>Preencha as chaves da Meta no .env e conecte uma conta Instagram Business ou Creator.</span>
+        </div>
+      `}
+
+      ${instagramView === "overview" ? renderInstagramOverview() : renderInstagramContent(contentItems)}
+    </div>
+  `;
+}
+
+function renderInstagramOverview() {
+  const totals = instagramDashboard.totals;
+  const maxContentCount = Math.max(...instagramDashboard.byContentType.map(type => type.count), 1);
+
+  return `
+    <div class="insight-grid">
+      ${renderInsightCard("Alcance", totals.reach)}
+      ${renderInsightCard("Visualizações", totals.views)}
+      ${renderInsightCard("Curtidas", totals.likes)}
+      ${renderInsightCard("Comentários", totals.comments)}
+      ${renderInsightCard("Salvamentos", totals.saves)}
+      ${renderInsightCard("Compartilhamentos", totals.shares)}
+    </div>
+
+    <div class="grid two dashboard-split">
+      <section class="panel">
+        <h3>Distribuição por formato</h3>
+        <div class="insight-bars">
+          ${instagramDashboard.byContentType.length ? instagramDashboard.byContentType.map(item => `
+            <div class="insight-bar">
+              <div><strong>${formatInstagramContentType(item.contentType)}</strong><span>${item.count} conteúdos</span></div>
+              <meter min="0" max="${maxContentCount}" value="${item.count}"></meter>
+            </div>
+          `).join("") : `<p>Nenhum conteúdo sincronizado ainda.</p>`}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>Última sincronização</h3>
+        <p>${instagramDashboard.lastSyncAt ? formatDateTime(instagramDashboard.lastSyncAt) : "Ainda não sincronizado."}</p>
+        <p>${instagramDashboard.account?.username ? `Conta: @${instagramDashboard.account.username}` : "Nenhuma conta conectada."}</p>
+      </section>
+    </div>
+  `;
+}
+
+function renderInstagramContent(items) {
+  const typeTabs = [
+    ["all", "Todos"],
+    ["reel", "Reels"],
+    ["post", "Posts"],
+    ["story", "Stories"],
+    ["carousel", "Carrosséis"],
+    ["video", "Vídeos"],
+    ["unknown", "Outros"]
+  ];
+
+  return `
+    <div class="content-type-tabs" aria-label="Tipos de conteúdo">
+      ${typeTabs.map(([value, label]) => `
+        <button class="${instagramContentType === value ? "active" : ""}" type="button" data-content-type="${value}">${label}</button>
+      `).join("")}
+    </div>
+
+    <div class="stack">
+      ${items.length ? items.map(item => `
+        <article class="item-card insight-content-card">
+          <div class="item-topline">
+            <span>${formatInstagramContentType(item.contentType)}</span>
+            <strong>${formatDateTime(item.publishedAt)}</strong>
+          </div>
+          <h3>${item.caption || "Conteúdo sem legenda"}</h3>
+          <small class="linked-video">Vídeo no ContentOS: ${item.linkedVideoTitle || "sem vínculo"}</small>
+          <div class="mini-metrics">
+            ${renderMiniMetric("Alcance", item.metrics.reach)}
+            ${renderMiniMetric("Views", item.metrics.views)}
+            ${renderMiniMetric("Likes", item.metrics.likes)}
+            ${renderMiniMetric("Salvos", item.metrics.saves)}
+            ${renderMiniMetric("Shares", item.metrics.shares)}
+          </div>
+        </article>
+      `).join("") : emptyState()}
+    </div>
+  `;
+}
+
+function renderInsightCard(label, value) {
+  return `
+    <article class="insight-card">
+      <span>${label}</span>
+      <strong>${formatNumber(value)}</strong>
     </article>
-  `).join("")}</div>`;
+  `;
+}
+
+function renderMiniMetric(label, value) {
+  return `<span><strong>${formatNumber(value)}</strong>${label}</span>`;
+}
+
+function renderLibrary(query) {
+  const items = state.library.filter(item => matchesQuery([
+    item.name,
+    item.category,
+    item.context.join(" "),
+    item.platforms.join(" "),
+    item.notes,
+    item.example
+  ], query) && item.category === currentLibraryCategory);
+
+  return `
+    <div class="library-layout">
+      <aside class="library-sidebar" aria-label="Categorias da biblioteca">
+        ${libraryCategories.map(category => {
+          const count = state.library.filter(item => item.category === category.id).length;
+          return `
+            <button class="library-category ${category.id === currentLibraryCategory ? "active" : ""}" type="button" data-library-category="${category.id}">
+              <span class="library-category-main">
+                ${icon(category.icon)}
+                <span>${category.label}</span>
+              </span>
+              <small>${count}</small>
+            </button>
+          `;
+        }).join("")}
+      </aside>
+
+      <div class="library-content">
+        ${items.length ? `<div class="grid three">${items.map(item => `
+          <article class="item-card">
+            <div class="item-topline"><span>${formatLibraryCategory(item.category)}</span><strong>${item.platforms.join(", ")}</strong></div>
+            <h3>${item.name}</h3>
+            <p>${item.notes}</p>
+            ${item.example ? `<small>${item.example}</small>` : ""}
+            <div class="tag-row">${item.context.map(context => `<span>${context}</span>`).join("")}</div>
+          </article>
+        `).join("")}</div>` : emptyState()}
+      </div>
+    </div>
+  `;
 }
 
 function renderAssistant() {
@@ -466,10 +534,12 @@ function emptyState() {
 
 function attachSectionEvents() {
   attachDropdownEvents();
+  attachLibraryEvents();
+  attachDashboardEvents();
 
   const ideaForm = document.querySelector("#ideaForm");
   if (ideaForm) {
-    ideaForm.addEventListener("submit", event => {
+    ideaForm.addEventListener("submit", async event => {
       event.preventDefault();
       const formData = new FormData(ideaForm);
       state.ideas.unshift({
@@ -481,31 +551,33 @@ function attachSectionEvents() {
         priority: formData.get("priority"),
         createdAt: new Date().toISOString().slice(0, 10)
       });
-      persistAndRender();
+      await persistAndRender();
     });
   }
 
   const textForm = document.querySelector("#textForm");
   if (textForm) {
-    textForm.addEventListener("submit", event => {
+    textForm.addEventListener("submit", async event => {
       event.preventDefault();
       const formData = new FormData(textForm);
       state.texts.unshift({
         id: createId("text"),
-        pieceId: null,
+        pieceId: normalizePieceId(formData.get("pieceId")),
         platform: formData.get("platform"),
         title: formData.get("title"),
         body: formData.get("body"),
         seoTerms: splitList(formData.get("seoTerms")),
         hashtags: splitHashtags(formData.get("hashtags"))
       });
-      persistAndRender();
+      await persistAndRender();
     });
   }
 
   document.querySelectorAll("[data-promote-idea]").forEach(button => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const idea = state.ideas.find(item => item.id === button.dataset.promoteIdea);
+      if (!idea) return;
+
       state.pieces.unshift({
         id: createId("piece"),
         title: idea.title,
@@ -518,8 +590,52 @@ function attachSectionEvents() {
         textIds: [],
         publicationIds: []
       });
-      setSection("pieces");
-      saveState(state);
+      currentSection = "pieces";
+      window.location.hash = "pieces";
+      await persistAndRender();
+    });
+  });
+}
+
+function attachDashboardEvents() {
+  document.querySelectorAll("[data-instagram-view]").forEach(button => {
+    button.addEventListener("click", () => {
+      instagramView = button.dataset.instagramView;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-content-type]").forEach(button => {
+    button.addEventListener("click", () => {
+      instagramContentType = button.dataset.contentType;
+      render();
+    });
+  });
+
+  const syncButton = document.querySelector("[data-sync-instagram]");
+  if (syncButton) {
+    syncButton.addEventListener("click", async () => {
+      isInstagramSyncing = true;
+      render();
+
+      try {
+        await syncInstagramInsights();
+        instagramDashboard = await loadInstagramDashboard();
+      } catch (error) {
+        console.error(error);
+      } finally {
+        isInstagramSyncing = false;
+        render();
+      }
+    });
+  }
+}
+
+function attachLibraryEvents() {
+  document.querySelectorAll("[data-library-category]").forEach(button => {
+    button.addEventListener("click", () => {
+      currentLibraryCategory = button.dataset.libraryCategory;
+      render();
     });
   });
 }
@@ -576,15 +692,121 @@ function splitHashtags(value) {
     .map(item => item.startsWith("#") ? item : `#${item}`);
 }
 
-globalSearch.addEventListener("input", render);
-newIdeaBtn.addEventListener("click", () => setSection("ideas"));
-newPieceBtn.addEventListener("click", () => setSection("pieces"));
-document.addEventListener("click", () => {
-  document.querySelectorAll("[data-dropdown].open").forEach(closeDropdown);
-});
-window.addEventListener("hashchange", () => {
-  currentSection = window.location.hash.replace("#", "") || "ideas";
-  render();
-});
+function findPieceTitle(pieceId) {
+  return state.pieces.find(piece => piece.id === pieceId)?.title || "Vídeo sem vínculo";
+}
 
-render();
+function normalizePieceId(value) {
+  return value && value !== "__none" ? value : null;
+}
+
+function countLinkedTexts(pieceId) {
+  return state.texts.filter(text => text.pieceId === pieceId).length;
+}
+
+function dashboardMetric() {
+  if (!instagramDashboard.account) return "não conectado";
+  return instagramDashboard.lastSyncAt ? "sincronizado" : "aguardando sync";
+}
+
+function createEmptyInstagramDashboard() {
+  return {
+    isConfigured: false,
+    account: null,
+    lastSyncAt: null,
+    totals: {
+      reach: 0,
+      views: 0,
+      likes: 0,
+      comments: 0,
+      saves: 0,
+      shares: 0
+    },
+    byContentType: [],
+    contentItems: []
+  };
+}
+
+function formatInstagramContentType(type) {
+  const labels = {
+    all: "Todos",
+    post: "Post",
+    reel: "Reel",
+    story: "Story",
+    carousel: "Carrossel",
+    video: "Vídeo",
+    unknown: "Outro"
+  };
+
+  return labels[type] || labels.unknown;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("pt-BR").format(Number(value || 0));
+}
+
+function formatDateTime(value) {
+  if (!value) return "sem data";
+
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function formatLibraryCategory(category) {
+  const labels = {
+    gancho: "gancho",
+    formato: "formato",
+    angulo_camera: "ângulo de câmera",
+    musica: "música",
+    efeito_sonoro: "efeito sonoro",
+    cta: "CTA",
+    estrutura_roteiro: "estrutura de roteiro"
+  };
+
+  return labels[category] || String(category || "").replaceAll("_", " ");
+}
+
+function icon(name) {
+  const paths = {
+    lightbulb: `<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.7.5 1 1.1 1 1.8V17h6v-.5c0-.7.3-1.3 1-1.8A7 7 0 0 0 12 2Z"/>`,
+    layers: `<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/><path d="m3 18 9 5 9-5"/>`,
+    text: `<path d="M4 6h16"/><path d="M4 12h12"/><path d="M4 18h9"/>`,
+    folder: `<path d="M3 6h6l2 2h10v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6Z"/>`,
+    send: `<path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="M22 2 11 13"/>`,
+    bookmark: `<path d="M6 3h12a1 1 0 0 1 1 1v18l-7-4-7 4V4a1 1 0 0 1 1-1Z"/>`,
+    spark: `<path d="M12 2v5"/><path d="M12 17v5"/><path d="M4.2 4.2 7.8 7.8"/><path d="m16.2 16.2 3.6 3.6"/><path d="M2 12h5"/><path d="M17 12h5"/><path d="m4.2 19.8 3.6-3.6"/><path d="m16.2 7.8 3.6-3.6"/>`,
+    chart: `<path d="M4 19V5"/><path d="M4 19h16"/><rect x="7" y="11" width="3" height="5" rx="1"/><rect x="12" y="7" width="3" height="9" rx="1"/><rect x="17" y="3" width="3" height="13" rx="1"/>`,
+    zap: `<path d="M13 2 4 14h7l-1 8 10-13h-7l1-7Z"/>`,
+    wave: `<path d="M3 12c2 0 2-5 4-5s2 10 4 10 2-10 4-10 2 5 4 5h2"/>`,
+    music: `<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>`,
+    layout: `<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>`,
+    camera: `<path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/>`,
+    target: `<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>`,
+    list: `<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>`
+  };
+
+  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.bookmark}</svg>`;
+}
+
+function bindGlobalEvents() {
+  globalSearch.addEventListener("input", render);
+  newIdeaBtn.addEventListener("click", () => setSection("ideas"));
+  newPieceBtn.addEventListener("click", () => setSection("pieces"));
+  sidebarToggle.addEventListener("click", () => {
+    isSidebarCollapsed = !isSidebarCollapsed;
+    shell.classList.toggle("sidebar-collapsed", isSidebarCollapsed);
+    sidebarToggle.setAttribute("aria-expanded", String(!isSidebarCollapsed));
+    sidebarToggle.setAttribute("aria-label", isSidebarCollapsed ? "Expandir menu" : "Recolher menu");
+  });
+  document.addEventListener("click", () => {
+    document.querySelectorAll("[data-dropdown].open").forEach(closeDropdown);
+  });
+  window.addEventListener("hashchange", () => {
+    currentSection = window.location.hash.replace("#", "") || "ideas";
+    render();
+  });
+}
+
+init();

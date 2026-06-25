@@ -1,6 +1,6 @@
 # ContentOS
 
-Sistema local para organizar ideias, peças, textos, versões de arquivos, publicações e biblioteca editorial.
+Sistema local para organizar ideias, vídeos, textos, versões de arquivos, publicações e biblioteca editorial.
 
 ## Como abrir
 

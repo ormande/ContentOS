@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mjs 4179",
-    "start": "node server.mjs 4179"
+    "start": "node server.mjs 4179",
+    "seed": "node src/data/seed.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.2"
   }
 }
