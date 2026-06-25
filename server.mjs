@@ -122,7 +122,8 @@ function loadServerConfig() {
     META_APP_ID: process.env.META_APP_ID || fileEnv.META_APP_ID || "",
     META_APP_SECRET: process.env.META_APP_SECRET || fileEnv.META_APP_SECRET || "",
     META_REDIRECT_URI: process.env.META_REDIRECT_URI || fileEnv.META_REDIRECT_URI || `http://127.0.0.1:${port}/api/instagram/callback`,
-    META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || fileEnv.META_GRAPH_API_VERSION || "v23.0"
+    META_AUTH_MODE: process.env.META_AUTH_MODE || fileEnv.META_AUTH_MODE || "instagram",
+    META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || fileEnv.META_GRAPH_API_VERSION || "v25.0"
   };
 }
 
@@ -219,16 +220,26 @@ function handleInstagramConnect(response) {
     return;
   }
 
-  const authUrl = new URL("https://www.facebook.com/dialog/oauth");
+  const isFacebookMode = serverConfig.META_AUTH_MODE === "facebook";
+  const authUrl = new URL(isFacebookMode ? "https://www.facebook.com/dialog/oauth" : "https://www.instagram.com/oauth/authorize");
   authUrl.searchParams.set("client_id", serverConfig.META_APP_ID);
   authUrl.searchParams.set("redirect_uri", serverConfig.META_REDIRECT_URI);
-  authUrl.searchParams.set("scope", [
-    "instagram_basic",
-    "instagram_manage_insights",
-    "pages_show_list",
-    "pages_read_engagement"
-  ].join(","));
+  authUrl.searchParams.set("scope", isFacebookMode
+    ? [
+      "instagram_basic",
+      "instagram_manage_insights",
+      "pages_show_list",
+      "pages_read_engagement"
+    ].join(",")
+    : [
+      "instagram_business_basic",
+      "instagram_business_manage_insights"
+    ].join(","));
   authUrl.searchParams.set("response_type", "code");
+  if (!isFacebookMode) {
+    authUrl.searchParams.set("force_authentication", "1");
+    authUrl.searchParams.set("enable_fb_login", "0");
+  }
 
   response.writeHead(302, { Location: authUrl.toString() });
   response.end();

@@ -24,7 +24,7 @@ Preencha no `.env`:
 META_APP_ID=
 META_APP_SECRET=
 META_REDIRECT_URI=http://127.0.0.1:4179/api/instagram/callback
-META_GRAPH_API_VERSION=v23.0
+META_GRAPH_API_VERSION=v25.0
 SUPABASE_SERVICE_ROLE_KEY=
 ```
 
@@ -46,7 +46,12 @@ O `supabase/schema.sql` já prepara:
 
 ## Permissões Meta
 
-Comece com:
+Fluxo padrão atual:
+
+- `instagram_business_basic`
+- `instagram_business_manage_insights`
+
+Se quiser usar o fluxo antigo com Facebook Login, defina `META_AUTH_MODE=facebook` e use:
 
 - `instagram_basic`
 - `instagram_manage_insights`

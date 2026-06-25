@@ -127,10 +127,21 @@ create table if not exists public.instagram_accounts (
   account_name text,
   profile_picture_url text,
   access_token text,
+  auth_provider text not null default 'instagram' check (auth_provider in ('instagram', 'facebook')),
   token_expires_at timestamptz,
   connected_at timestamptz not null default now(),
   last_sync_at timestamptz
 );
+
+alter table public.instagram_accounts
+add column if not exists auth_provider text not null default 'instagram';
+
+alter table public.instagram_accounts
+drop constraint if exists instagram_accounts_auth_provider_check;
+
+alter table public.instagram_accounts
+add constraint instagram_accounts_auth_provider_check
+check (auth_provider in ('instagram', 'facebook'));
 
 create table if not exists public.instagram_media (
   id uuid primary key default gen_random_uuid(),
