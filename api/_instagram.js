@@ -169,12 +169,20 @@ export async function handleCallback(request, response) {
     return;
   }
 
-  const connectedAccount = getMetaAuthMode() === "facebook"
-    ? await connectWithFacebookLogin(supabase, code)
-    : await connectWithInstagramLogin(supabase, code);
+  try {
+    const connectedAccount = getMetaAuthMode() === "facebook"
+      ? await connectWithFacebookLogin(supabase, code)
+      : await connectWithInstagramLogin(supabase, code);
 
-  await syncInstagramAccount(supabase, connectedAccount);
-  response.redirect(302, "/#dashboard");
+    await syncInstagramAccount(supabase, connectedAccount).catch(error => {
+      console.error("Instagram initial sync failed", error);
+    });
+
+    response.redirect(302, "/#dashboard");
+  } catch (error) {
+    console.error("Instagram callback failed", error);
+    response.redirect(302, `/#dashboard?instagram_error=${encodeURIComponent(error.message)}`);
+  }
 }
 
 async function connectWithFacebookLogin(supabase, code) {
