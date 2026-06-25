@@ -125,6 +125,7 @@ function loadServerConfig() {
     INSTAGRAM_APP_SECRET: process.env.INSTAGRAM_APP_SECRET || fileEnv.INSTAGRAM_APP_SECRET || "",
     META_REDIRECT_URI: process.env.META_REDIRECT_URI || fileEnv.META_REDIRECT_URI || `http://127.0.0.1:${port}/api/instagram/callback`,
     META_AUTH_MODE: process.env.META_AUTH_MODE || fileEnv.META_AUTH_MODE || "facebook",
+    META_LOGIN_CONFIG_ID: process.env.META_LOGIN_CONFIG_ID || fileEnv.META_LOGIN_CONFIG_ID || "",
     META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || fileEnv.META_GRAPH_API_VERSION || "v25.0"
   };
 }
@@ -226,16 +227,20 @@ function handleInstagramConnect(response) {
   const authUrl = new URL(isFacebookMode ? "https://www.facebook.com/dialog/oauth" : "https://www.instagram.com/oauth/authorize");
   authUrl.searchParams.set("client_id", isFacebookMode ? serverConfig.META_APP_ID : getInstagramAppId());
   authUrl.searchParams.set("redirect_uri", serverConfig.META_REDIRECT_URI);
-  authUrl.searchParams.set("scope", isFacebookMode
-    ? [
-      "instagram_basic",
-      "instagram_manage_insights",
-      "pages_show_list",
-      "pages_read_engagement"
-    ].join(",")
-    : [
-      "instagram_business_basic"
-    ].join(","));
+  if (isFacebookMode && serverConfig.META_LOGIN_CONFIG_ID) {
+    authUrl.searchParams.set("config_id", serverConfig.META_LOGIN_CONFIG_ID);
+  } else {
+    authUrl.searchParams.set("scope", isFacebookMode
+      ? [
+        "instagram_basic",
+        "instagram_manage_insights",
+        "pages_show_list",
+        "pages_read_engagement"
+      ].join(",")
+      : [
+        "instagram_business_basic"
+      ].join(","));
+  }
   authUrl.searchParams.set("response_type", "code");
   if (!isFacebookMode) {
     authUrl.searchParams.set("force_authentication", "1");

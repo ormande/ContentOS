@@ -56,7 +56,11 @@ export function buildMetaAuthUrl() {
     const authUrl = new URL("https://www.facebook.com/dialog/oauth");
     authUrl.searchParams.set("client_id", process.env.META_APP_ID);
     authUrl.searchParams.set("redirect_uri", process.env.META_REDIRECT_URI);
-    authUrl.searchParams.set("scope", facebookAuthScopes.join(","));
+    if (process.env.META_LOGIN_CONFIG_ID) {
+      authUrl.searchParams.set("config_id", process.env.META_LOGIN_CONFIG_ID);
+    } else {
+      authUrl.searchParams.set("scope", facebookAuthScopes.join(","));
+    }
     authUrl.searchParams.set("response_type", "code");
 
     return authUrl.toString();
