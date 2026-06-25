@@ -121,8 +121,10 @@ function loadServerConfig() {
     SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || fileEnv.SUPABASE_ANON_KEY || "",
     META_APP_ID: process.env.META_APP_ID || fileEnv.META_APP_ID || "",
     META_APP_SECRET: process.env.META_APP_SECRET || fileEnv.META_APP_SECRET || "",
+    INSTAGRAM_APP_ID: process.env.INSTAGRAM_APP_ID || fileEnv.INSTAGRAM_APP_ID || "",
+    INSTAGRAM_APP_SECRET: process.env.INSTAGRAM_APP_SECRET || fileEnv.INSTAGRAM_APP_SECRET || "",
     META_REDIRECT_URI: process.env.META_REDIRECT_URI || fileEnv.META_REDIRECT_URI || `http://127.0.0.1:${port}/api/instagram/callback`,
-    META_AUTH_MODE: process.env.META_AUTH_MODE || fileEnv.META_AUTH_MODE || "instagram",
+    META_AUTH_MODE: process.env.META_AUTH_MODE || fileEnv.META_AUTH_MODE || "facebook",
     META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || fileEnv.META_GRAPH_API_VERSION || "v25.0"
   };
 }
@@ -222,7 +224,7 @@ function handleInstagramConnect(response) {
 
   const isFacebookMode = serverConfig.META_AUTH_MODE === "facebook";
   const authUrl = new URL(isFacebookMode ? "https://www.facebook.com/dialog/oauth" : "https://www.instagram.com/oauth/authorize");
-  authUrl.searchParams.set("client_id", serverConfig.META_APP_ID);
+  authUrl.searchParams.set("client_id", isFacebookMode ? serverConfig.META_APP_ID : getInstagramAppId());
   authUrl.searchParams.set("redirect_uri", serverConfig.META_REDIRECT_URI);
   authUrl.searchParams.set("scope", isFacebookMode
     ? [
@@ -232,8 +234,7 @@ function handleInstagramConnect(response) {
       "pages_read_engagement"
     ].join(",")
     : [
-      "instagram_business_basic",
-      "instagram_business_manage_insights"
+      "instagram_business_basic"
     ].join(","));
   authUrl.searchParams.set("response_type", "code");
   if (!isFacebookMode) {
@@ -266,7 +267,20 @@ async function handleInstagramSync(request, response) {
 }
 
 function hasMetaConfig() {
-  return Boolean(serverConfig.META_APP_ID && serverConfig.META_APP_SECRET && serverConfig.META_REDIRECT_URI);
+  if (!serverConfig.META_REDIRECT_URI) return false;
+  if (serverConfig.META_AUTH_MODE === "facebook") {
+    return Boolean(serverConfig.META_APP_ID && serverConfig.META_APP_SECRET);
+  }
+
+  return Boolean(getInstagramAppId() && getInstagramAppSecret());
+}
+
+function getInstagramAppId() {
+  return serverConfig.INSTAGRAM_APP_ID || serverConfig.META_APP_ID;
+}
+
+function getInstagramAppSecret() {
+  return serverConfig.INSTAGRAM_APP_SECRET || serverConfig.META_APP_SECRET;
 }
 
 function createEmptyInstagramDashboard() {

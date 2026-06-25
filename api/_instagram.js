@@ -4,8 +4,7 @@ const graphVersion = process.env.META_GRAPH_API_VERSION || "v25.0";
 const facebookGraphBaseUrl = `https://graph.facebook.com/${graphVersion}`;
 const instagramGraphBaseUrl = `https://graph.instagram.com/${graphVersion}`;
 const instagramAuthScopes = [
-  "instagram_business_basic",
-  "instagram_business_manage_insights"
+  "instagram_business_basic"
 ];
 const facebookAuthScopes = [
   "instagram_basic",
@@ -32,7 +31,13 @@ export function createSupabaseAdmin() {
 }
 
 export function hasMetaConfig() {
-  return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET && process.env.META_REDIRECT_URI);
+  if (!process.env.META_REDIRECT_URI) return false;
+
+  if (getMetaAuthMode() === "facebook") {
+    return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET);
+  }
+
+  return Boolean(getInstagramAppId() && getInstagramAppSecret());
 }
 
 export function createEmptyDashboard() {
@@ -58,7 +63,7 @@ export function buildMetaAuthUrl() {
   }
 
   const authUrl = new URL("https://www.instagram.com/oauth/authorize");
-  authUrl.searchParams.set("client_id", process.env.META_APP_ID);
+  authUrl.searchParams.set("client_id", getInstagramAppId());
   authUrl.searchParams.set("redirect_uri", process.env.META_REDIRECT_URI);
   authUrl.searchParams.set("scope", instagramAuthScopes.join(","));
   authUrl.searchParams.set("response_type", "code");
@@ -222,7 +227,7 @@ async function connectWithInstagramLogin(supabase, code) {
   const shortToken = await exchangeInstagramCode(code);
   const longToken = await graphGet("/access_token", {
     grant_type: "ig_exchange_token",
-    client_secret: process.env.META_APP_SECRET,
+    client_secret: getInstagramAppSecret(),
     access_token: shortToken.access_token
   }, instagramGraphBaseUrl);
 
@@ -305,6 +310,22 @@ async function syncInstagramAccount(supabase, account) {
   if (syncError) throw syncError;
 
   try {
+    const accountInsightPayload = await getAccountInsights(account);
+    const accountMetrics = normalizeInsightPayload(accountInsightPayload);
+    const { error: accountSnapshotError } = await supabase
+      .from("instagram_insight_snapshots")
+      .insert({
+        account_id: account.id,
+        media_id: null,
+        source_type: "account",
+        content_type: "unknown",
+        metric_date: new Date().toISOString().slice(0, 10),
+        metrics: accountMetrics,
+        raw: accountInsightPayload
+      });
+
+    let snapshotsCreated = accountSnapshotError ? 0 : 1;
+
     const mediaResponse = await graphGet(`/${account.ig_user_id}/media`, {
       fields: "id,caption,media_type,media_product_type,permalink,thumbnail_url,timestamp",
       limit: "50",
@@ -312,7 +333,6 @@ async function syncInstagramAccount(supabase, account) {
     }, getGraphBaseUrlForAccount(account));
 
     let mediaSynced = 0;
-    let snapshotsCreated = 0;
 
     for (const media of mediaResponse.data || []) {
       const mediaType = classifyMedia(media);
@@ -382,6 +402,23 @@ async function syncInstagramAccount(supabase, account) {
   }
 }
 
+async function getAccountInsights(account) {
+  const metrics = "impressions,reach,profile_views,follower_count";
+
+  try {
+    return await graphGet(`/${account.ig_user_id}/insights`, {
+      metric: metrics,
+      period: "day",
+      access_token: account.access_token
+    }, getGraphBaseUrlForAccount(account));
+  } catch (error) {
+    return {
+      data: [],
+      error: error.message
+    };
+  }
+}
+
 async function getMediaInsights(mediaId, accessToken, account) {
   const metrics = "reach,views,likes,comments,saved,shares,total_interactions";
 
@@ -405,8 +442,8 @@ async function exchangeInstagramCode(code) {
       "Content-Type": "application/x-www-form-urlencoded"
     },
     body: new URLSearchParams({
-      client_id: process.env.META_APP_ID,
-      client_secret: process.env.META_APP_SECRET,
+      client_id: getInstagramAppId(),
+      client_secret: getInstagramAppSecret(),
       grant_type: "authorization_code",
       redirect_uri: process.env.META_REDIRECT_URI,
       code
@@ -439,7 +476,15 @@ async function graphGet(path, params, baseUrl = facebookGraphBaseUrl) {
 }
 
 function getMetaAuthMode() {
-  return process.env.META_AUTH_MODE === "facebook" ? "facebook" : "instagram";
+  return process.env.META_AUTH_MODE === "instagram" ? "instagram" : "facebook";
+}
+
+function getInstagramAppId() {
+  return process.env.INSTAGRAM_APP_ID || process.env.META_APP_ID;
+}
+
+function getInstagramAppSecret() {
+  return process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET;
 }
 
 function getGraphBaseUrlForAccount(account) {
@@ -454,6 +499,9 @@ function normalizeInsightPayload(payload = {}) {
     const numberValue = Number(value || 0);
 
     if (item.name === "reach") metrics.reach = numberValue;
+    if (item.name === "impressions") metrics.impressions = numberValue;
+    if (item.name === "profile_views") metrics.profileViews = numberValue;
+    if (item.name === "follower_count") metrics.followers = numberValue;
     if (item.name === "views" || item.name === "plays") metrics.views = numberValue;
     if (item.name === "likes") metrics.likes = numberValue;
     if (item.name === "comments") metrics.comments = numberValue;
@@ -467,6 +515,9 @@ function normalizeInsightPayload(payload = {}) {
 function normalizeMetrics(metrics = {}) {
   return {
     reach: Number(metrics.reach || 0),
+    impressions: Number(metrics.impressions || 0),
+    profileViews: Number(metrics.profileViews || metrics.profile_views || 0),
+    followers: Number(metrics.followers || metrics.follower_count || 0),
     views: Number(metrics.views || metrics.plays || 0),
     likes: Number(metrics.likes || 0),
     comments: Number(metrics.comments || 0),
@@ -478,6 +529,9 @@ function normalizeMetrics(metrics = {}) {
 function addMetrics(left, right) {
   return {
     reach: left.reach + right.reach,
+    impressions: left.impressions + right.impressions,
+    profileViews: left.profileViews + right.profileViews,
+    followers: Math.max(left.followers, right.followers),
     views: left.views + right.views,
     likes: left.likes + right.likes,
     comments: left.comments + right.comments,

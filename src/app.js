@@ -382,8 +382,11 @@ function renderInstagramOverview() {
 
   return `
     <div class="insight-grid">
+      ${renderInsightCard("Impressões", totals.impressions)}
       ${renderInsightCard("Alcance", totals.reach)}
       ${renderInsightCard("Visualizações", totals.views)}
+      ${renderInsightCard("Visitas ao perfil", totals.profileViews)}
+      ${renderInsightCard("Seguidores", totals.followers)}
       ${renderInsightCard("Curtidas", totals.likes)}
       ${renderInsightCard("Comentários", totals.comments)}
       ${renderInsightCard("Salvamentos", totals.saves)}
@@ -723,6 +726,9 @@ function createEmptyInstagramDashboard() {
     lastSyncAt: null,
     totals: {
       reach: 0,
+      impressions: 0,
+      profileViews: 0,
+      followers: 0,
       views: 0,
       likes: 0,
       comments: 0,

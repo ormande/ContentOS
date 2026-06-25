@@ -24,6 +24,7 @@ Preencha no `.env`:
 META_APP_ID=
 META_APP_SECRET=
 META_REDIRECT_URI=http://127.0.0.1:4179/api/instagram/callback
+META_AUTH_MODE=facebook
 META_GRAPH_API_VERSION=v25.0
 SUPABASE_SERVICE_ROLE_KEY=
 ```
@@ -46,18 +47,14 @@ O `supabase/schema.sql` já prepara:
 
 ## Permissões Meta
 
-Fluxo padrão atual:
-
-- `instagram_business_basic`
-- `instagram_business_manage_insights`
-
-Se quiser usar o fluxo antigo com Facebook Login, defina `META_AUTH_MODE=facebook` e use:
+Fluxo padrão atual com Facebook Login e Página conectada ao Instagram:
 
 - `instagram_basic`
 - `instagram_manage_insights`
 - `pages_show_list`
 - `pages_read_engagement`
 
+Esse fluxo usa `META_APP_ID` e `META_APP_SECRET`. As variáveis `INSTAGRAM_APP_ID` e `INSTAGRAM_APP_SECRET` só são necessárias se o projeto voltar para o login direto do Instagram.
 ## Dashboard
 
 A aba Dashboard tem duas visões:
