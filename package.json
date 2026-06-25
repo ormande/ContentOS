@@ -6,9 +6,16 @@
   "scripts": {
     "dev": "node server.mjs 4179",
     "start": "node server.mjs 4179",
-    "seed": "node src/data/seed.js"
+    "seed": "node src/data/seed.js",
+    "typecheck": "tsc --noEmit",
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "check": "npm run typecheck && npm run check:syntax"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3"
   }
 }

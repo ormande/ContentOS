@@ -33,16 +33,16 @@ let instagramView = "overview";
 let instagramContentType = "all";
 let isInstagramSyncing = false;
 
-const shell = document.querySelector("#app");
-const nav = document.querySelector("#sectionNav");
-const sidebarToggle = document.querySelector("#sidebarToggle");
-const contentArea = document.querySelector("#contentArea");
-const sectionKicker = document.querySelector("#sectionKicker");
-const sectionTitle = document.querySelector("#sectionTitle");
-const sectionMetric = document.querySelector("#sectionMetric");
-const globalSearch = document.querySelector("#globalSearch");
-const newIdeaBtn = document.querySelector("#newIdeaBtn");
-const newPieceBtn = document.querySelector("#newPieceBtn");
+const shell = /** @type {HTMLElement} */ (document.querySelector("#app"));
+const nav = /** @type {HTMLElement} */ (document.querySelector("#sectionNav"));
+const sidebarToggle = /** @type {HTMLButtonElement} */ (document.querySelector("#sidebarToggle"));
+const contentArea = /** @type {HTMLElement} */ (document.querySelector("#contentArea"));
+const sectionKicker = /** @type {HTMLElement} */ (document.querySelector("#sectionKicker"));
+const sectionTitle = /** @type {HTMLElement} */ (document.querySelector("#sectionTitle"));
+const sectionMetric = /** @type {HTMLElement} */ (document.querySelector("#sectionMetric"));
+const globalSearch = /** @type {HTMLInputElement} */ (document.querySelector("#globalSearch"));
+const newIdeaBtn = /** @type {HTMLButtonElement} */ (document.querySelector("#newIdeaBtn"));
+const newPieceBtn = /** @type {HTMLButtonElement} */ (document.querySelector("#newPieceBtn"));
 
 async function init() {
   contentArea.innerHTML = `<div class="empty-state"><strong>Carregando ContentOS...</strong><span>Buscando dados no Supabase.</span></div>`;
@@ -99,7 +99,8 @@ function renderNav() {
   `).join("");
 
   nav.querySelectorAll("[data-section]").forEach(button => {
-    button.addEventListener("click", () => setSection(button.dataset.section));
+    const navButton = /** @type {HTMLButtonElement} */ (button);
+    navButton.addEventListener("click", () => setSection(navButton.dataset.section || "ideas"));
   });
 }
 
@@ -537,7 +538,7 @@ function attachSectionEvents() {
   attachLibraryEvents();
   attachDashboardEvents();
 
-  const ideaForm = document.querySelector("#ideaForm");
+  const ideaForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#ideaForm"));
   if (ideaForm) {
     ideaForm.addEventListener("submit", async event => {
       event.preventDefault();
@@ -555,7 +556,7 @@ function attachSectionEvents() {
     });
   }
 
-  const textForm = document.querySelector("#textForm");
+  const textForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#textForm"));
   if (textForm) {
     textForm.addEventListener("submit", async event => {
       event.preventDefault();
@@ -574,8 +575,9 @@ function attachSectionEvents() {
   }
 
   document.querySelectorAll("[data-promote-idea]").forEach(button => {
-    button.addEventListener("click", async () => {
-      const idea = state.ideas.find(item => item.id === button.dataset.promoteIdea);
+    const promoteButton = /** @type {HTMLButtonElement} */ (button);
+    promoteButton.addEventListener("click", async () => {
+      const idea = state.ideas.find(item => item.id === promoteButton.dataset.promoteIdea);
       if (!idea) return;
 
       state.pieces.unshift({
@@ -599,15 +601,17 @@ function attachSectionEvents() {
 
 function attachDashboardEvents() {
   document.querySelectorAll("[data-instagram-view]").forEach(button => {
-    button.addEventListener("click", () => {
-      instagramView = button.dataset.instagramView;
+    const viewButton = /** @type {HTMLButtonElement} */ (button);
+    viewButton.addEventListener("click", () => {
+      instagramView = viewButton.dataset.instagramView || "overview";
       render();
     });
   });
 
   document.querySelectorAll("[data-content-type]").forEach(button => {
-    button.addEventListener("click", () => {
-      instagramContentType = button.dataset.contentType;
+    const contentTypeButton = /** @type {HTMLButtonElement} */ (button);
+    contentTypeButton.addEventListener("click", () => {
+      instagramContentType = contentTypeButton.dataset.contentType || "all";
       render();
     });
   });
@@ -633,8 +637,9 @@ function attachDashboardEvents() {
 
 function attachLibraryEvents() {
   document.querySelectorAll("[data-library-category]").forEach(button => {
-    button.addEventListener("click", () => {
-      currentLibraryCategory = button.dataset.libraryCategory;
+    const categoryButton = /** @type {HTMLButtonElement} */ (button);
+    categoryButton.addEventListener("click", () => {
+      currentLibraryCategory = categoryButton.dataset.libraryCategory || libraryCategories[0].id;
       render();
     });
   });
@@ -642,31 +647,33 @@ function attachLibraryEvents() {
 
 function attachDropdownEvents() {
   document.querySelectorAll("[data-dropdown]").forEach(dropdown => {
-    const trigger = dropdown.querySelector(".dropdown-trigger");
-    const input = dropdown.querySelector("input");
-    const label = dropdown.querySelector("[data-dropdown-label]");
+    const dropdownElement = /** @type {HTMLElement} */ (dropdown);
+    const trigger = /** @type {HTMLButtonElement} */ (dropdownElement.querySelector(".dropdown-trigger"));
+    const input = /** @type {HTMLInputElement} */ (dropdownElement.querySelector("input"));
+    const label = /** @type {HTMLElement} */ (dropdownElement.querySelector("[data-dropdown-label]"));
     const options = dropdown.querySelectorAll(".dropdown-option");
 
     trigger.addEventListener("click", event => {
       event.stopPropagation();
       document.querySelectorAll("[data-dropdown].open").forEach(openDropdown => {
-        if (openDropdown !== dropdown) closeDropdown(openDropdown);
+        if (openDropdown !== dropdownElement) closeDropdown(openDropdown);
       });
-      dropdown.classList.toggle("open");
-      trigger.setAttribute("aria-expanded", dropdown.classList.contains("open"));
+      dropdownElement.classList.toggle("open");
+      trigger.setAttribute("aria-expanded", String(dropdownElement.classList.contains("open")));
     });
 
     options.forEach(option => {
+      const optionButton = /** @type {HTMLButtonElement} */ (option);
       option.addEventListener("click", event => {
         event.stopPropagation();
-        input.value = option.dataset.value;
-        label.textContent = option.textContent.trim();
+        input.value = optionButton.dataset.value || "";
+        label.textContent = optionButton.textContent.trim();
         options.forEach(item => {
           const isSelected = item === option;
           item.classList.toggle("selected", isSelected);
-          item.setAttribute("aria-selected", isSelected);
+          item.setAttribute("aria-selected", String(isSelected));
         });
-        closeDropdown(dropdown);
+        closeDropdown(dropdownElement);
       });
     });
   });
