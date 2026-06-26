@@ -163,16 +163,19 @@ function buildPrompt(type, data) {
       system: [
         "Você é um roteirista de vídeos curtos para Instagram, TikTok e YouTube Shorts.",
         "Responda somente em JSON válido.",
+        "Recomende gancho, formato e CTAs exclusivamente a partir de library.hooks, library.formats e library.ctas.",
+        "Quando houver métricas (views, reach, saves, shares, likes, uses), priorize itens com melhor desempenho.",
         "Formato obrigatório:",
-        '{"script_text":"string","fields":{},"suggested_ctas":[{"name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}'
+        '{"script_text":"string","fields":{},"suggested_hook":{"id":"string","name":"string","reason":"string"},"suggested_format":{"id":"string","name":"string","reason":"string"},"suggested_ctas":[{"id":"string","name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}'
       ].join(" "),
       user: JSON.stringify({
-        task: "Gerar roteiro completo seguindo o template informado.",
+        task: "Gerar roteiro completo seguindo o template informado e recomendar gancho, formato e CTAs da biblioteca.",
         template: data.template,
         fields: data.fields,
         title: data.title,
         objective: data.objective,
-        idea: data.idea
+        idea: data.idea,
+        library: data.library || {}
       })
     };
   }
@@ -183,15 +186,20 @@ function buildPrompt(type, data) {
       system: [
         "Você é especialista em copy para vídeos curtos e legendas de redes sociais.",
         "Responda somente em JSON válido.",
+        "Instagram e TikTok devem ser um único texto por plataforma, com título, corpo e hashtags separados por linha em branco (não use campos separados).",
+        "Use no máximo 5 hashtags por plataforma, preferencialmente uma palavra cada.",
+        "YouTube Shorts usa 3 campos: title (até 100 caracteres, SEO + hashtags), description (até 5000 caracteres sobre o vídeo) e tags (até 500 caracteres com palavras-chave separadas por vírgula).",
+        "Respeite tone.emojis (sem, pouco, normal, muito), tone.enthusiasm (baixo, moderado, alto) e tone.voice (casual, neutro, direto).",
         "Formato obrigatório:",
-        '{"platforms":{"instagram":{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"]},"tiktok":{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"]},"shorts":{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"],"yt_title":"string","yt_description":"string","yt_tags":"tag1, tag2"}}}'
+        '{"instagram":"string","tiktok":"string","youtube":{"title":"string","description":"string","tags":"string"}}'
       ].join(" "),
       user: JSON.stringify({
-        task: "Gerar uma legenda por plataforma respeitando os limites de cada uma.",
+        task: "Gerar legendas unificadas por conteúdo para as plataformas solicitadas.",
         title: data.title,
         script: data.script,
         objective: data.objective,
         platforms: data.platforms,
+        tone: data.tone || {},
         hashtags: data.hashtags,
         seo_terms: data.seo_terms
       })
@@ -238,7 +246,8 @@ function buildPrompt(type, data) {
         "Você melhora conteúdo existente para vídeos curtos.",
         "Responda somente em JSON válido.",
         "Se type for script, use o formato:",
-        '{"script_text":"string","fields":{},"suggested_ctas":[{"name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}',
+        '{"script_text":"string","fields":{},"suggested_hook":{"id":"string","name":"string","reason":"string"},"suggested_format":{"id":"string","name":"string","reason":"string"},"suggested_ctas":[{"id":"string","name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}',
+        "Recomende gancho, formato e CTAs somente a partir de context.library, priorizando melhores métricas quando existirem.",
         "Se type for caption, use o formato:",
         '{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"],"yt_title":"string","yt_description":"string","yt_tags":"tag1, tag2"}'
       ].join(" "),

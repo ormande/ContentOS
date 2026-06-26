@@ -138,6 +138,8 @@ create table if not exists public.texts (
 alter table public.texts add column if not exists yt_title text;
 alter table public.texts add column if not exists yt_description text;
 alter table public.texts add column if not exists yt_tags text;
+alter table public.texts add column if not exists instagram_caption text;
+alter table public.texts add column if not exists tiktok_caption text;
 alter table public.texts add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.files (

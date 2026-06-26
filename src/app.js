@@ -10,17 +10,51 @@ import {
   platformRules,
   saveState
 } from "./data/store.js";
+import { openConfirm, openPrompt } from "./ui/modal.js";
 
 const sections = [
   { id: "dashboard", label: "Dashboard", icon: "chart", kicker: "instagram", title: "Insights do Instagram", metric: () => dashboardMetric() },
   { id: "ideas", label: "Ideias", icon: "lightbulb", kicker: "captura", title: "Banco de ideias", metric: currentState => `${currentState.ideas.length} ideias` },
   { id: "pieces", label: "Montador", icon: "layers", kicker: "produção", title: "Montador de vídeo", metric: currentState => `${currentState.pieces.length} peças` },
-  { id: "texts", label: "Legendas", icon: "text", kicker: "distribuição", title: "Legendas por plataforma", metric: currentState => `${currentState.texts.length} legendas` },
-  { id: "files", label: "Arquivos", icon: "folder", kicker: "materiais", title: "Arquivos da produção", metric: currentState => `${currentState.files.length} arquivos` },
+  { id: "texts", label: "Legendas", icon: "text", kicker: "distribuição", title: "Legendas por conteúdo", metric: currentState => `${countCaptionPieces(currentState)} conteúdos` },
   { id: "publications", label: "Publicações", icon: "send", kicker: "histórico", title: "Saídas registradas", metric: currentState => `${currentState.publications.length} registros` },
   { id: "library", label: "Biblioteca", icon: "bookmark", kicker: "componentes", title: "Biblioteca criativa", metric: currentState => `${currentState.library.length} itens` },
-  { id: "assistant", label: "IA", icon: "spark", kicker: "análise", title: "IA para insights", metric: () => "mês atual" }
+  { id: "assistant", label: "IA", icon: "spark", kicker: "análise", title: "IA para insights", metric: () => "mês atual" },
+  { id: "settings", label: "Configurações", icon: "settings", kicker: "sistema", title: "Configurações", metric: () => themeMetricLabel() }
 ];
+
+const THEME_STORAGE_KEY = "contentos-theme";
+let themePreference = readThemePreference();
+
+function readThemePreference() {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+}
+
+function resolveTheme(preference = themePreference) {
+  if (preference === "system") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return preference;
+}
+
+function applyTheme(preference = themePreference) {
+  document.documentElement.dataset.theme = resolveTheme(preference);
+}
+
+function setThemePreference(preference) {
+  if (preference !== "light" && preference !== "dark" && preference !== "system") return;
+  themePreference = preference;
+  localStorage.setItem(THEME_STORAGE_KEY, preference);
+  applyTheme(preference);
+}
+
+function themeMetricLabel() {
+  const labels = { light: "tema claro", dark: "tema escuro", system: "automático" };
+  return labels[themePreference] || "automático";
+}
+
+applyTheme();
 
 const libraryCategories = [
   { id: "gancho", label: "Gancho", slot: "hook", icon: "zap" },
@@ -97,9 +131,11 @@ let instagramCustomStart = "";
 let instagramCustomEnd = "";
 let isInstagramSyncing = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
-let captionDrafts = [];
+let captionDraft = null;
 let editingIdeaId = null;
 let editingLibraryItemId = null;
+let pendingLibrarySelection = null;
+let skipPieceFormPhases = new Set();
 let aiDrafts = {
   script: {
     pieceId: null,
@@ -181,8 +217,9 @@ function setSection(sectionId) {
 
 function render() {
   const section = sections.find(item => item.id === currentSection) || sections[0];
+  const pieceFormSnapshots = currentSection === "pieces" ? snapshotPieceForms() : null;
   sectionKicker.textContent = section.kicker;
-  sectionTitle.textContent = section.title;
+  renderSectionTitle(section);
   renderNav();
   updateMetric(section);
 
@@ -192,21 +229,41 @@ function render() {
     ideas: renderIdeas,
     pieces: renderPieces,
     texts: renderTexts,
-    files: renderFiles,
     publications: renderPublications,
     library: renderLibrary,
-    assistant: renderAssistant
+    assistant: renderAssistant,
+    settings: renderSettings
   };
 
   contentArea.innerHTML = renderers[section.id](query);
+  if (pieceFormSnapshots?.size) {
+    restorePieceForms(pieceFormSnapshots, skipPieceFormPhases);
+    skipPieceFormPhases = new Set();
+  }
+  applyPendingLibrarySelection();
   attachSectionEvents();
+}
+
+function renderSectionTitle(section) {
+  if (section.id === "dashboard") {
+    sectionTitle.innerHTML = `
+      <span class="section-title-text">${escapeHtml(section.title)}</span>
+      <span class="info-tip">
+        <button class="info-tip-trigger" type="button" aria-label="Escopo da integração">i</button>
+        <span class="info-tip-popover" role="tooltip">Este dashboard mostra somente métricas do Instagram, lidas pela Meta Graph API. Não há dados de TikTok Analytics ou YouTube Studio aqui.</span>
+      </span>
+    `;
+    return;
+  }
+
+  sectionTitle.textContent = section.title;
 }
 
 function renderNav() {
   nav.innerHTML = sections.map(section => `
     <button class="nav-item ${section.id === currentSection ? "active" : ""}" type="button" data-section="${section.id}">
       <span class="nav-label">
-        ${icon(section.icon)}
+        <span class="nav-icon-wrap">${icon(section.icon)}</span>
         <span class="nav-text">${section.label}</span>
       </span>
       <small>${section.metric(state)}</small>
@@ -230,51 +287,72 @@ function renderIdeas(query) {
   const editingIdea = state.ideas.find(idea => idea.id === editingIdeaId) || null;
 
   return `
-    <div class="grid two">
-      <form class="panel form-panel" id="ideaForm">
+    <div class="ideas-layout">
+      <form class="panel ideas-form" id="ideaForm">
         <h3>${editingIdea ? "Editar ideia" : "Nova ideia"}</h3>
         <input type="hidden" name="ideaId" value="${escapeHtml(editingIdea?.id || "")}" />
-        <input name="title" value="${escapeHtml(editingIdea?.title || "")}" placeholder="Título da ideia" required />
-        <input name="source" value="${escapeHtml(editingIdea?.source || "")}" placeholder="Origem" />
-        <textarea name="description" placeholder="Descrição da ideia">${escapeHtml(editingIdea?.description || "")}</textarea>
-        <textarea name="angle" placeholder="Ângulo editorial">${escapeHtml(editingIdea?.angle || "")}</textarea>
-        <input name="tags" value="${escapeHtml((editingIdea?.tags || []).join(", "))}" placeholder="hashtags ou tags separadas por vírgula" />
-        <select name="priority">
-          <option value="alta" ${(editingIdea?.priority || "média") === "alta" ? "selected" : ""}>Prioridade alta</option>
-          <option value="média" ${(editingIdea?.priority || "média") === "média" ? "selected" : ""}>Prioridade média</option>
-          <option value="baixa" ${(editingIdea?.priority || "média") === "baixa" ? "selected" : ""}>Prioridade baixa</option>
-        </select>
-        <select name="status">
-          <option value="disponivel" ${(editingIdea?.status || "disponivel") === "disponivel" ? "selected" : ""}>Disponível</option>
-          <option value="em_producao" ${(editingIdea?.status || "disponivel") === "em_producao" ? "selected" : ""}>Em produção</option>
-          <option value="reaproveitavel" ${(editingIdea?.status || "disponivel") === "reaproveitavel" ? "selected" : ""}>Reaproveitável</option>
-        </select>
+        <div class="ideas-form-grid">
+          <div class="field-span-6">${renderField("Título", `<input name="title" value="${escapeHtml(editingIdea?.title || "")}" required />`, { required: true })}</div>
+          <div class="field-span-6">${renderField("Origem", `<input name="source" value="${escapeHtml(editingIdea?.source || "")}" placeholder="Ex.: conversa, tendência…" />`, { hint: "De onde veio a ideia", inlineHint: true })}</div>
+          <div class="field-span-6">${renderField("Descrição", `<textarea name="description" placeholder="Resumo da ideia">${escapeHtml(editingIdea?.description || "")}</textarea>`)}</div>
+          <div class="field-span-6">${renderField("Ângulo editorial", `<textarea name="angle" placeholder="Perspectiva ou abordagem">${escapeHtml(editingIdea?.angle || "")}</textarea>`)}</div>
+          <div class="field-span-4">${renderField("Tags", renderTagChipInput("tags", editingIdea?.tags || []), { hint: "Vírgula para adicionar", inlineHint: true })}</div>
+          <div class="field-span-4">${renderField("Prioridade", renderCustomSelect({
+            name: "priority",
+            value: editingIdea?.priority || "média",
+            placeholder: "Selecione a prioridade",
+            options: [
+              { value: "alta", label: "Alta" },
+              { value: "média", label: "Média" },
+              { value: "baixa", label: "Baixa" }
+            ]
+          }))}</div>
+          <div class="field-span-4">${renderField("Status", renderCustomSelect({
+            name: "status",
+            value: editingIdea?.status || "disponivel",
+            placeholder: "Selecione o status",
+            options: [
+              { value: "disponivel", label: "Disponível" },
+              { value: "em_producao", label: "Em produção" },
+              { value: "reaproveitavel", label: "Reaproveitável" }
+            ]
+          }))}</div>
+        </div>
         <div class="inline-actions">
           <button class="primary-action" type="submit">${editingIdea ? "Salvar alterações" : "Salvar ideia"}</button>
           ${editingIdea ? `<button class="ghost-action compact" type="button" id="cancelIdeaEdit">Cancelar</button>` : ""}
         </div>
       </form>
 
-      <div class="stack">
-        ${ideas.length ? ideas.map(idea => `
-          <article class="item-card">
-            <div class="item-topline">
-              <span>${idea.source || "ideia"}</span>
-              <strong>${formatIdeaStatus(idea.status)}</strong>
+      ${ideas.length ? `
+        <div class="table-surface ideas-table">
+          <div class="table-row table-head">
+            <span>Título</span>
+            <span>Descrição</span>
+            <span>Status</span>
+            <span>Prioridade</span>
+            <span>Tags</span>
+            <span>Ações</span>
+          </div>
+          ${ideas.map(idea => `
+            <div class="table-row ideas-row">
+              <span>
+                <strong>${escapeHtml(idea.title)}</strong>
+                <small>${escapeHtml(idea.source || "sem origem")}</small>
+              </span>
+              <span>${escapeHtml(idea.description || idea.angle || "—")}</span>
+              <span>${formatIdeaStatus(idea.status)}</span>
+              <span>${escapeHtml(idea.priority || "média")}</span>
+              <span class="tag-row">${idea.tags.length ? idea.tags.map(tag => `<span>${escapeHtml(withHash(tag))}</span>`).join("") : "—"}</span>
+              <span class="table-actions">
+                <button class="ghost-action compact" type="button" data-promote-idea="${idea.id}">Criar peça</button>
+                <button class="ghost-action compact" type="button" data-edit-idea="${idea.id}">Editar</button>
+                <button class="ghost-action compact" type="button" data-delete-idea="${idea.id}">Excluir</button>
+              </span>
             </div>
-            <h3>${escapeHtml(idea.title)}</h3>
-            <p>${escapeHtml(idea.description || idea.angle || "Sem descrição ainda.")}</p>
-            <div class="tag-row">${idea.tags.map(tag => `<span>${escapeHtml(withHash(tag))}</span>`).join("")}</div>
-            <small class="linked-video">Prioridade: ${escapeHtml(idea.priority || "média")}</small>
-            <div class="inline-actions">
-              <button class="ghost-action compact" type="button" data-promote-idea="${idea.id}">Criar peça</button>
-              <button class="ghost-action compact" type="button" data-edit-idea="${idea.id}">Editar</button>
-              <button class="ghost-action compact" type="button" data-delete-idea="${idea.id}">Excluir</button>
-              <button class="ghost-action compact" type="button" data-toggle-idea-status="${idea.id}">Marcar reaproveitável</button>
-            </div>
-          </article>
-        `).join("") : emptyState()}
-      </div>
+          `).join("")}
+        </div>
+      ` : emptyState()}
     </div>
   `;
 }
@@ -299,30 +377,33 @@ function renderPieces(query) {
 
   return `
     <div class="piece-layout">
-      <aside class="panel piece-sidebar">
-        <div class="item-topline">
-          <span>Projetos</span>
-          <strong>${pieces.length}</strong>
+      <aside class="piece-sidebar">
+        <div class="piece-sidebar-head">
+          <div class="item-topline">
+            <span>Projetos</span>
+            <strong>${pieces.length}</strong>
+          </div>
+          <button class="primary-action piece-new-btn" type="button" id="createPieceBtn">Nova peça</button>
         </div>
-        <button class="primary-action" type="button" id="createPieceBtn">Nova peça</button>
-        <div class="stack mini">
+        <div class="piece-list-scroll">
           ${pieces.length ? pieces.map(piece => {
             const metrics = getPieceInstagramMetrics(piece.id);
             const missing = getMissingRequiredSlots(piece.id);
             const progress = getPieceProgress(piece);
             return `
               <button class="piece-list-item ${piece.id === selectedPiece?.id ? "active" : ""}" type="button" data-piece-select="${piece.id}">
-                <strong>${escapeHtml(piece.title)}</strong>
-                <span>${findIdeaTitle(piece.ideaId)}</span>
-                <small>${piece.platforms.length ? piece.platforms.map(formatPlatform).join(", ") : "sem plataformas"}</small>
-                <small>${progress.completed}/${progress.total} fases | ${formatNumber(metrics.views)} views | ${missing.length} pendências</small>
+                <span class="piece-list-item-main">
+                  <strong>${escapeHtml(piece.title)}</strong>
+                  <span class="piece-list-item-meta">${findIdeaTitle(piece.ideaId)}</span>
+                </span>
+                <span class="piece-list-item-badge ${missing.length > 0 ? "has-pending" : ""}">${progress.completed}/${progress.total} · ${missing.length} pend.</span>
               </button>
             `;
-          }).join("") : emptyState("Nenhuma peça criada ainda.", "Crie a primeira peça para começar o montador.")}
+          }).join("") : `<div class="empty-state compact"><strong>Nenhuma peça</strong><span>Crie a primeira peça.</span></div>`}
         </div>
       </aside>
 
-      <div class="stack">
+      <div class="piece-workspace stack">
         ${selectedPiece ? renderPieceWorkspace(selectedPiece) : emptyState("Nenhuma peça selecionada.", "Crie uma peça ou promova uma ideia para montar o vídeo.")}
       </div>
     </div>
@@ -337,10 +418,13 @@ function renderPieceWorkspace(piece) {
   const progress = getPieceProgress(piece);
 
   return `
-    <section class="panel">
-      <div class="item-topline">
+    <section class="panel piece-summary-panel">
+      <div class="item-topline piece-summary-topline">
         <span>${idea ? `Ideia: ${escapeHtml(idea.title)}` : "Sem ideia vinculada"}</span>
-        <strong>${progress.completed}/${progress.total} fases encaminhadas</strong>
+        <div class="piece-summary-status">
+          <strong>${progress.completed}/${progress.total} fases encaminhadas</strong>
+          <button class="icon-action danger" type="button" data-delete-piece="${piece.id}" aria-label="Excluir peça" title="Excluir peça">${icon("trash")}</button>
+        </div>
       </div>
       <h3>${escapeHtml(piece.title)}</h3>
       <p>${escapeHtml(piece.brief.promise || idea?.description || "Defina a promessa do conteúdo para orientar o vídeo.")}</p>
@@ -351,20 +435,23 @@ function renderPieceWorkspace(piece) {
         ${renderMiniMetric("Salvos", linkedMetrics.saves)}
       </div>
       ${missingSlots.length ? `<div class="notice warning"><strong>Slots obrigatórios faltando:</strong><span>${missingSlots.map(formatSlotLabel).join(", ")}</span></div>` : `<div class="notice success"><strong>Base obrigatória preenchida.</strong><span>Os slots essenciais da peça já estão vinculados.</span></div>`}
-      <div class="inline-actions">
-        <button class="ghost-action compact" type="button" data-delete-piece="${piece.id}">Excluir peça</button>
-      </div>
     </section>
 
-    <section class="panel">
+    <section class="panel piece-progress-panel">
       <h3>Progresso do vídeo</h3>
       <div class="phase-progress-grid">
-        ${buildPiecePhaseStatus(piece).map(step => `
-          <div class="phase-progress-card ${step.complete ? "complete" : step.warning ? "warning" : ""}">
-            <strong>${step.label}</strong>
+        ${buildPiecePhaseStatus(piece).map(step => {
+          const cardClass = step.complete ? "complete" : step.warning ? "warning" : "pending";
+          return `
+          <div class="phase-progress-card ${cardClass}">
+            <div class="phase-progress-card-top">
+              <span class="phase-progress-icon" aria-hidden="true">${icon(step.complete ? "check" : "alert")}</span>
+              <strong>${step.label}</strong>
+            </div>
             <span>${step.description}</span>
           </div>
-        `).join("")}
+        `;
+        }).join("")}
       </div>
     </section>
 
@@ -390,24 +477,32 @@ function renderPiecePhase(piece, script, idea) {
 
 function renderBriefPhase(piece, idea) {
   return `
-    <form class="panel stack" data-piece-form="brief" data-piece-id="${piece.id}">
-      <h3>Brief</h3>
-      <input name="title" value="${escapeHtml(piece.title)}" placeholder="Título da peça" required />
-      <select name="ideaId">
-        <option value="">Sem ideia vinculada</option>
-        ${state.ideas.map(item => `<option value="${item.id}" ${item.id === piece.ideaId ? "selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}
-      </select>
-      <select name="objective">
-        <option value="">Selecione o objetivo do vídeo</option>
-        ${objectiveOptions.map(option => `<option value="${option}" ${piece.brief.objective === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
-      </select>
-      <textarea name="promise" placeholder="Promessa">${escapeHtml(piece.brief.promise)}</textarea>
-      <input name="due" type="date" value="${escapeHtml(piece.due || "")}" />
-      <div class="checkbox-grid">
-        ${renderPlatformCheckbox("platforms", piece.platforms)}
+    <form class="panel phase-form" data-piece-form="brief" data-piece-id="${piece.id}">
+      <div class="phase-form-header">
+        <h3>Brief</h3>
       </div>
-      <button class="primary-action" type="submit">Salvar brief</button>
-      ${idea ? `<small class="linked-video">Descrição da ideia: ${escapeHtml(idea.description || idea.angle || "sem descrição")}</small>` : ""}
+      <div class="phase-form-body stack">
+        ${renderField("Título da peça", `<input name="title" value="${escapeHtml(piece.title)}" required />`, { required: true })}
+        ${renderField("Ideia vinculada", renderCustomSelect({
+          name: "ideaId",
+          value: piece.ideaId || "",
+          placeholder: "Sem ideia vinculada",
+          options: state.ideas.map(item => ({ value: item.id, label: item.title }))
+        }))}
+        ${renderField("Objetivo do vídeo", renderCustomSelect({
+          name: "objective",
+          value: piece.brief.objective || "",
+          placeholder: "Selecione o objetivo",
+          options: objectiveOptions.map(option => ({ value: option, label: option }))
+        }))}
+        ${renderField("Promessa", `<textarea name="promise">${escapeHtml(piece.brief.promise)}</textarea>`, { hint: "O que o espectador ganha ao assistir." })}
+        ${renderField("Prazo", `<input class="native-date-input" name="due" type="date" value="${escapeHtml(piece.due || "")}" />`)}
+        ${renderField("Plataformas", `<div class="checkbox-grid">${renderPlatformCheckbox("platforms", piece.platforms)}</div>`)}
+        ${idea ? `<small class="linked-video">Descrição da ideia: ${escapeHtml(idea.description || idea.angle || "sem descrição")}</small>` : ""}
+      </div>
+      <div class="phase-form-footer">
+        <button class="primary-action" type="submit">Salvar brief</button>
+      </div>
     </form>
   `;
 }
@@ -416,7 +511,11 @@ function renderScriptPhase(piece, script, idea) {
   const currentScript = script || createLocalScript(piece.id);
   const fields = scriptTemplates[currentScript.template] || scriptTemplates.storytelling;
   const structureComponent = getPrimaryComponent(piece.id, "script_structure");
+  const hookComponent = getPrimaryComponent(piece.id, "hook");
+  const formatComponent = getPrimaryComponent(piece.id, "format");
   const structureItems = getLibraryOptionsForSlot("script_structure");
+  const hookItems = getLibraryOptionsForSlot("hook");
+  const formatItems = getLibraryOptionsForSlot("format");
   const ctaItems = getLibraryOptionsForSlot("cta");
   const selectedCtas = getPieceComponents(piece.id, "cta").map(component => component.libraryItemId).filter(Boolean);
   const canImproveScript = hasScriptContent(currentScript);
@@ -425,44 +524,73 @@ function renderScriptPhase(piece, script, idea) {
 
   return `
     <div class="stack">
-      <form class="panel stack" data-piece-form="script" data-piece-id="${piece.id}">
-        <h3>Roteiro</h3>
-        ${renderLibrarySingleSelect({
-          fieldName: "structureItemId",
-          category: "estrutura_roteiro",
-          value: structureComponent?.libraryItemId || "",
-          options: structureItems,
-          placeholder: "Escolha a estrutura de roteiro",
-          addLabel: "+ Adicionar nova estrutura",
-          dataset: `data-script-structure-select="${piece.id}"`
-        })}
-        ${fields.map(field => renderScriptField(currentScript, field)).join("")}
-        <div class="stack mini">
-          <strong>CTA da peça</strong>
-          <div class="checkbox-grid">
-            ${ctaItems.map(item => `
-              <label class="checkbox-pill">
-                <input type="checkbox" name="ctaIds" value="${item.id}" ${selectedCtas.includes(item.id) ? "checked" : ""} />
-                <span>${escapeHtml(item.name)}</span>
-              </label>
-            `).join("")}
+      <form class="panel phase-form" data-piece-form="script" data-piece-id="${piece.id}">
+        <div class="phase-form-header">
+          <h3>Roteiro</h3>
+        </div>
+        <div class="phase-form-body stack">
+          ${renderFieldGroup("Estrutura", "Define o modelo narrativo do roteiro.", `
+            ${renderLibrarySingleSelect({
+              label: "Estrutura de roteiro",
+              fieldName: "structureItemId",
+              category: "estrutura_roteiro",
+              value: structureComponent?.libraryItemId || "",
+              options: structureItems,
+              placeholder: "Selecione a estrutura",
+              addLabel: "+ Adicionar nova estrutura",
+              dataset: `data-script-structure-select="${piece.id}"`,
+              required: true
+            })}
+          `)}
+          ${renderFieldGroup("Conteúdo", "Preencha cada bloco do roteiro conforme a estrutura escolhida.", fields.map(field => renderScriptField(currentScript, field)).join(""))}
+          ${renderFieldGroup("Gancho e formato", "Componentes criativos que definem como o vídeo começa e se apresenta.", `
+            ${renderLibrarySingleSelect({
+              label: "Gancho",
+              fieldName: "hookItemId",
+              category: "gancho",
+              value: hookComponent?.libraryItemId || "",
+              options: hookItems,
+              placeholder: "Selecione o gancho",
+              addLabel: "+ Adicionar novo gancho",
+              required: true
+            })}
+            ${renderLibrarySingleSelect({
+              label: "Formato",
+              fieldName: "formatItemId",
+              category: "formato",
+              value: formatComponent?.libraryItemId || "",
+              options: formatItems,
+              placeholder: "Selecione o formato",
+              addLabel: "+ Adicionar novo formato",
+              required: true
+            })}
+          `)}
+          ${renderFieldGroup("CTA", "Chamadas para ação que serão vinculadas à peça.", `
+            <div class="checkbox-grid">
+              ${ctaItems.length ? ctaItems.map(item => `
+                <label class="checkbox-pill">
+                  <input type="checkbox" name="ctaIds" value="${item.id}" ${selectedCtas.includes(item.id) ? "checked" : ""} />
+                  <span>${escapeHtml(item.name)}</span>
+                </label>
+              `).join("") : `<p class="field-hint">Nenhum CTA cadastrado na biblioteca.</p>`}
+            </div>
+            <button class="ghost-action compact align-start" type="button" data-quick-add-library="cta">+ Adicionar novo CTA</button>
+          `)}
+          <div class="inline-actions">
+            <button class="ghost-action compact" type="button" data-script-generate="${piece.id}" ${isGeneratingScript ? "disabled" : ""}>${isGeneratingScript ? "Gerando..." : "Gerar pela IA"}</button>
+            <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${canImproveScript && !isGeneratingScript ? "" : "disabled"}>${isGeneratingScript ? "Gerando..." : "Melhorar com IA"}</button>
           </div>
-          <button class="ghost-action compact align-start" type="button" data-quick-add-library="cta">+ Adicionar novo CTA</button>
-          <small class="linked-video">A IA sugere os CTAs mais adequados com base no objetivo do brief.</small>
         </div>
-        <div class="inline-actions">
-          <button class="ghost-action compact" type="button" data-script-generate="${piece.id}" ${isGeneratingScript ? "disabled" : ""}>${isGeneratingScript ? "Gerando..." : "Gerar pela IA"}</button>
-          <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${canImproveScript && !isGeneratingScript ? "" : "disabled"}>${isGeneratingScript ? "Gerando..." : "Melhorar com IA"}</button>
+        <div class="phase-form-footer">
+          <small class="linked-video">${idea ? `A IA usa o título e a descrição da ideia "${escapeHtml(idea.title)}".` : "Vincule uma ideia para enriquecer a geração do roteiro."}</small>
+          <button class="primary-action" type="submit">Salvar roteiro</button>
         </div>
-        <button class="primary-action" type="submit">Salvar roteiro</button>
-        <small class="linked-video">${idea ? `A IA usa o título e a descrição da ideia "${escapeHtml(idea.title)}".` : "Vincule uma ideia para enriquecer a geração do roteiro."}</small>
       </form>
       ${renderAiPreview({
         title: "Prévia do roteiro",
         state: scriptAiState,
         visible: scriptAiState.pieceId === piece.id && (scriptAiState.loading || scriptAiState.text || scriptAiState.error)
       })}
-      ${renderComponentManager(piece.id, ["hook", "format"])}
     </div>
   `;
 }
@@ -471,21 +599,29 @@ function renderCapturePhase(piece) {
   const angleItems = getLibraryOptionsForSlot("camera_angle");
   const selectedAngles = getPieceComponents(piece.id, "camera_angle").map(component => component.libraryItemId).filter(Boolean);
   return `
-    <div class="stack">
-      <form class="panel stack" data-piece-form="capture" data-piece-id="${piece.id}">
+    <form class="panel phase-form" data-piece-form="capture" data-piece-id="${piece.id}">
+      <div class="phase-form-header">
         <h3>Captação</h3>
-        <label class="field-stack">
-          <span>Ângulos de câmera</span>
-          <select name="cameraAngleIds" multiple size="${Math.max(4, Math.min(8, angleItems.length || 4))}">
-            ${angleItems.map(item => `<option value="${item.id}" ${selectedAngles.includes(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
-          </select>
-        </label>
-        <button class="ghost-action compact align-start" type="button" data-quick-add-library="angulo_camera">+ Adicionar novo ângulo</button>
-        <input name="driveUrl" value="${escapeHtml(piece.capture.driveUrl)}" placeholder="Link do Google Drive" />
+      </div>
+      <div class="phase-form-body stack">
+        ${renderFieldGroup("Ângulos de câmera", "Selecione os ângulos que serão gravados nesta peça.", `
+          <div class="checkbox-grid">
+            ${angleItems.length ? angleItems.map(item => `
+              <label class="checkbox-pill">
+                <input type="checkbox" name="cameraAngleIds" value="${item.id}" ${selectedAngles.includes(item.id) ? "checked" : ""} />
+                <span>${escapeHtml(item.name)}</span>
+              </label>
+            `).join("") : `<p class="field-hint">Nenhum ângulo cadastrado na biblioteca.</p>`}
+          </div>
+          <button class="ghost-action compact align-start" type="button" data-quick-add-library="angulo_camera">+ Adicionar novo ângulo</button>
+        `)}
+        ${renderField("Link do Google Drive", `<input name="driveUrl" value="${escapeHtml(piece.capture.driveUrl)}" placeholder="https://drive.google.com/..." />`, { hint: "Pasta ou arquivo com o material bruto gravado." })}
         ${piece.capture.driveUrl ? `<a class="ghost-action compact dashboard-connect" href="${escapeHtml(piece.capture.driveUrl)}" target="_blank" rel="noreferrer">Abrir Drive</a>` : ""}
+      </div>
+      <div class="phase-form-footer">
         <button class="primary-action" type="submit">Salvar captação</button>
-      </form>
-    </div>
+      </div>
+    </form>
   `;
 }
 
@@ -496,66 +632,93 @@ function renderEditPhase(piece) {
   const soundItems = getLibraryOptionsForSlot("sound_effect");
   const headerComponents = getHeaderComponents(piece.id);
   return `
-    <div class="stack">
-      <form class="panel stack" data-piece-form="edit" data-piece-id="${piece.id}">
+    <form class="panel phase-form" data-piece-form="edit" data-piece-id="${piece.id}">
+      <div class="phase-form-header">
         <h3>Edição</h3>
-        ${renderLibrarySingleSelect({
-          fieldName: "musicItemId",
-          category: "musica",
-          value: musicComponent?.libraryItemId || "",
-          options: musicItems,
-          placeholder: "Selecione a música",
-          addLabel: "+ Adicionar nova música"
-        })}
-        ${renderLibrarySingleSelect({
-          fieldName: "soundEffectItemId",
-          category: "efeito_sonoro",
-          value: soundComponent?.libraryItemId || "",
-          options: soundItems,
-          placeholder: "Selecione o efeito sonoro",
-          addLabel: "+ Adicionar novo efeito"
-        })}
+      </div>
+      <div class="phase-form-body stack">
+        ${renderFieldGroup("Áudio", "Música e efeitos sonoros da peça.", `
+          ${renderLibrarySingleSelect({
+            label: "Música",
+            fieldName: "musicItemId",
+            category: "musica",
+            value: musicComponent?.libraryItemId || "",
+            options: musicItems,
+            placeholder: "Selecione a música",
+            addLabel: "+ Adicionar nova música"
+          })}
+          ${renderLibrarySingleSelect({
+            label: "Efeito sonoro",
+            fieldName: "soundEffectItemId",
+            category: "efeito_sonoro",
+            value: soundComponent?.libraryItemId || "",
+            options: soundItems,
+            placeholder: "Selecione o efeito sonoro",
+            addLabel: "+ Adicionar novo efeito"
+          })}
+        `)}
         <div class="notice">
           <strong>Recomendação de header</strong>
           <span>${escapeHtml(piece.edit.headerRecommendation || "Sem recomendação ainda. Gere o roteiro com IA para receber a sugestão.")}</span>
         </div>
-        <div class="stack mini">
-          <strong>Headers sugeridos</strong>
-          ${headerComponents.length ? headerComponents.map(component => `
-            <label class="line-card">
-              <strong>${escapeHtml(component.notes || "Header sugerido")}</strong>
-              <span>Conta no geral como uso de headers, sem separar métricas por header individual.</span>
-              <span><input type="checkbox" name="usedHeaderIds" value="${component.id}" ${component.used ? "checked" : ""} /> marcar como usado</span>
-            </label>
-          `).join("") : `<p>Nenhum header sugerido ainda.</p>`}
-        </div>
+        ${renderFieldGroup("Headers sugeridos", "Marque os headers que foram usados na edição final.", headerComponents.length ? headerComponents.map(component => `
+          <label class="line-card">
+            <strong>${escapeHtml(component.notes || "Header sugerido")}</strong>
+            <span>Conta no geral como uso de headers, sem separar métricas por header individual.</span>
+            <span><input type="checkbox" name="usedHeaderIds" value="${component.id}" ${component.used ? "checked" : ""} /> marcar como usado</span>
+          </label>
+        `).join("") : `<p class="field-hint">Nenhum header sugerido ainda.</p>`)}
+      </div>
+      <div class="phase-form-footer">
         <button class="primary-action" type="submit">Salvar edição</button>
-      </form>
-    </div>
+      </div>
+    </form>
   `;
 }
 
 function renderDistributionPhase(piece) {
-  const texts = state.texts.filter(text => text.pieceId === piece.id);
   const linkedItems = getPieceInstagramItems(piece.id);
   const metrics = getPieceInstagramMetrics(piece.id);
 
   return `
     <div class="stack">
-      <form class="panel stack" data-piece-form="distribution" data-piece-id="${piece.id}">
-        <h3>Distribuição</h3>
-        <div class="notice">
-          <strong>Insights via Instagram</strong>
-          <span>Esta peça só lê métricas reais do Instagram, usando a Meta Graph API. Não há integração com TikTok Analytics nem YouTube Studio por enquanto.</span>
+      <form class="panel phase-form" data-piece-form="distribution" data-piece-id="${piece.id}">
+        <div class="phase-form-header">
+          <h3>Distribuição</h3>
         </div>
-        <input name="igMediaId" value="${escapeHtml(piece.distribution.igMediaId)}" placeholder="ig_media_id da publicação real" />
-        <input name="permalink" value="${escapeHtml(piece.distribution.permalink)}" placeholder="Permalink do Instagram" />
-        <button class="primary-action" type="submit">Salvar vínculo real</button>
+        <div class="phase-form-body stack">
+          <div class="notice">
+            <strong>Insights via Instagram</strong>
+            <span>Esta peça só lê métricas reais do Instagram, usando a Meta Graph API. Não há integração com TikTok Analytics nem YouTube Studio por enquanto.</span>
+          </div>
+          ${renderField("ID da mídia no Instagram", `<input name="igMediaId" value="${escapeHtml(piece.distribution.igMediaId)}" placeholder="ig_media_id" />`, { hint: "Identificador da publicação real no Instagram." })}
+          ${renderField("Permalink", `<input name="permalink" value="${escapeHtml(piece.distribution.permalink)}" placeholder="https://www.instagram.com/p/..." />`)}
+        </div>
+        <div class="phase-form-footer">
+          <button class="primary-action" type="submit">Salvar vínculo real</button>
+        </div>
       </form>
 
       <section class="panel">
-        <h3>Legendas vinculadas</h3>
-        ${texts.length ? `<div class="stack mini">${texts.map(text => `<div class="line-card"><strong>${formatPlatform(text.platform)}</strong><span>${escapeHtml(text.title)}</span></div>`).join("")}</div>` : `<p>Nenhuma legenda salva para esta peça ainda.</p>`}
+        <h3>Legendas do conteúdo</h3>
+        ${(() => {
+          const caption = getPieceCaption(piece.id);
+          if (!caption) return `<p>Nenhuma legenda salva para esta peça ainda.</p>`;
+          return `
+            <div class="stack mini caption-summary">
+              ${caption.instagramCaption ? `<div class="line-card"><strong>Instagram</strong><pre class="caption-block-preview">${escapeHtml(caption.instagramCaption)}</pre></div>` : ""}
+              ${caption.tiktokCaption ? `<div class="line-card"><strong>TikTok</strong><pre class="caption-block-preview">${escapeHtml(caption.tiktokCaption)}</pre></div>` : ""}
+              ${caption.ytTitle || caption.ytDescription || caption.ytTags ? `
+                <div class="line-card">
+                  <strong>YouTube Shorts</strong>
+                  ${caption.ytTitle ? `<span><strong>Título:</strong> ${escapeHtml(caption.ytTitle)}</span>` : ""}
+                  ${caption.ytDescription ? `<pre class="caption-block-preview">${escapeHtml(caption.ytDescription)}</pre>` : ""}
+                  ${caption.ytTags ? `<span><strong>Tags:</strong> ${escapeHtml(caption.ytTags)}</span>` : ""}
+                </div>
+              ` : ""}
+            </div>
+          `;
+        })()}
       </section>
 
       <section class="panel">
@@ -596,10 +759,12 @@ function renderComponentManager(pieceId, slots) {
             ${components.length ? components.map(component => renderComponentRow(component)).join("") : `<p>Nenhum componente nesse slot.</p>`}
             <form class="inline-form" data-add-component="${pieceId}">
               <input type="hidden" name="slot" value="${slot}" />
-              <select name="libraryItemId">
-                <option value="">${options.length ? "Selecione da biblioteca" : "Sem itens na biblioteca"}</option>
-                ${options.map(option => `<option value="${option.id}">${escapeHtml(option.name)}</option>`).join("")}
-              </select>
+              ${renderCustomSelect({
+                name: "libraryItemId",
+                value: "",
+                placeholder: options.length ? "Selecione da biblioteca" : "Sem itens na biblioteca",
+                options: options.map(option => ({ value: option.id, label: option.name }))
+              })}
               <button class="ghost-action compact" type="button" data-quick-add-library="${getLibraryCategoryForSlot(slot)}">+ Adicionar novo</button>
               <input name="notes" placeholder="Notas rápidas" />
               <button class="ghost-action compact" type="submit">Adicionar</button>
@@ -629,18 +794,17 @@ function renderComponentRow(component) {
 }
 
 function renderTexts(query) {
-  const texts = state.texts.filter(text => matchesQuery([
-    text.title,
-    text.body,
-    text.platform,
-    text.seoTerms.join(" "),
-    text.hashtags.join(" ")
+  const captions = getUnifiedCaptions().filter(caption => matchesQuery([
+    findPieceTitle(caption.pieceId),
+    caption.instagramCaption,
+    caption.tiktokCaption,
+    caption.ytTitle,
+    caption.ytDescription,
+    caption.ytTags
   ], query));
 
-  const selectedCaptionPiece = state.pieces.find(piece => piece.id === (captionDrafts[0]?.pieceId || selectedPieceId)) || state.pieces[0] || null;
-  const defaultPlatforms = captionDrafts.length
-    ? captionDrafts.map(item => item.platform)
-    : (selectedCaptionPiece?.platforms?.length ? selectedCaptionPiece.platforms : ["instagram", "tiktok", "shorts"]);
+  const selectedCaptionPiece = state.pieces.find(piece => piece.id === (captionDraft?.pieceId || selectedPieceId)) || state.pieces[0] || null;
+  const defaultPlatforms = selectedCaptionPiece?.platforms?.length ? selectedCaptionPiece.platforms : ["instagram", "tiktok", "shorts"];
   const captionTheme = selectedCaptionPiece ? getPieceTheme(selectedCaptionPiece) : "";
   const captionScript = selectedCaptionPiece ? getScriptSummary(selectedCaptionPiece.id) : "";
   const captionAiState = aiDrafts.caption;
@@ -653,8 +817,6 @@ function renderTexts(query) {
           <div class="rule-card">
             <strong>${rule.label}</strong>
             <span>${rule.note}</span>
-            <small>${Number.isFinite(rule.characterLimit) ? `${rule.characterLimit} caracteres` : "limite amplo"}</small>
-            ${platform === "shorts" ? `<small>Campos extras: título, descrição e tags.</small>` : ""}
           </div>
         `).join("")}
       </section>
@@ -662,12 +824,15 @@ function renderTexts(query) {
       <form class="panel stack" id="captionGeneratorForm">
         <h3>Gerar legendas com IA</h3>
         <div class="notice">
-          <strong>Fluxo padrão</strong>
-          <span>A IA lê o título da peça, o objetivo do brief, o roteiro gerado, hashtags e termos SEO já usados no banco para montar a legenda de cada plataforma.</span>
+          <strong>Fluxo unificado</strong>
+          <span>A IA gera um pacote de legendas por peça. Instagram e TikTok vêm em um único bloco com quebras de linha; YouTube Shorts em título, descrição e tags.</span>
         </div>
-        <select name="pieceId">
-          ${state.pieces.map(piece => `<option value="${piece.id}" ${piece.id === selectedCaptionPiece?.id ? "selected" : ""}>${escapeHtml(piece.title)}</option>`).join("")}
-        </select>
+        ${renderField("Peça", renderCustomSelect({
+          name: "pieceId",
+          value: selectedCaptionPiece?.id || "",
+          placeholder: "Selecione uma peça",
+          options: state.pieces.map(piece => ({ value: piece.id, label: piece.title }))
+        }))}
         ${selectedCaptionPiece ? `
           <div class="line-card">
             <strong>${escapeHtml(selectedCaptionPiece.title)}</strong>
@@ -679,24 +844,104 @@ function renderTexts(query) {
         <div class="checkbox-grid">
           ${renderPlatformCheckbox("platforms", defaultPlatforms)}
         </div>
+        ${renderFieldGroup("Tom da IA", "Define como a legenda deve soar.", `
+          <div class="caption-tone-grid">
+            ${renderField("Emojis", renderCustomSelect({
+              name: "emojiTone",
+              value: "normal",
+              placeholder: "Emojis",
+              options: [
+                { value: "sem", label: "Sem emojis" },
+                { value: "pouco", label: "Poucos emojis" },
+                { value: "normal", label: "Emojis normais" },
+                { value: "muito", label: "Muitos emojis" }
+              ]
+            }))}
+            ${renderField("Entusiasmo", renderCustomSelect({
+              name: "enthusiasmTone",
+              value: "moderado",
+              placeholder: "Entusiasmo",
+              options: [
+                { value: "baixo", label: "Baixo" },
+                { value: "moderado", label: "Moderado" },
+                { value: "alto", label: "Alto" }
+              ]
+            }))}
+            ${renderField("Tom de voz", renderCustomSelect({
+              name: "voiceTone",
+              value: "casual",
+              placeholder: "Tom",
+              options: [
+                { value: "casual", label: "Casual" },
+                { value: "neutro", label: "Neutro" },
+                { value: "direto", label: "Direto ao ponto" }
+              ]
+            }))}
+          </div>
+        `)}
+        ${captionAiState.error && captionAiState.pieceId === selectedCaptionPiece?.id ? `
+          <div class="notice warning"><strong>Erro na geração</strong><span>${escapeHtml(captionAiState.error)}</span></div>
+        ` : ""}
         <button class="primary-action" type="submit" ${selectedCaptionPiece && !isGeneratingCaption ? "" : "disabled"}>${isGeneratingCaption ? "Gerando..." : "Gerar com IA"}</button>
       </form>
-      ${renderAiPreview({
-        title: "Prévia das legendas",
-        state: captionAiState,
-        visible: captionAiState.pieceId === selectedCaptionPiece?.id && (captionAiState.loading || captionAiState.text || captionAiState.error)
-      })}
 
-      ${captionDrafts.length ? `
-        <section class="caption-preview-grid">
-          ${captionDrafts.map(draft => renderCaptionDraft(draft)).join("")}
-        </section>
-      ` : ""}
+      ${captionDraft ? renderCaptionForm(captionDraft, { mode: "draft" }) : ""}
 
       <section class="stack">
-        ${texts.length ? texts.map(renderTextCard).join("") : emptyState("Nenhuma legenda salva ainda.", "Gere as primeiras legendas da peça para começar a distribuição.")}
+        ${captions.length ? captions.map(caption => renderCaptionForm(caption, { mode: "saved" })).join("") : emptyState("Nenhuma legenda salva ainda.", "Gere o primeiro pacote de legendas para uma peça.")}
       </section>
     </div>
+  `;
+}
+
+function renderCaptionForm(caption, { mode }) {
+  const pieceTitle = findPieceTitle(caption.pieceId);
+  const instagramRule = platformRules.instagram;
+  const tiktokRule = platformRules.tiktok;
+  const shortsRule = platformRules.shorts;
+  const instagramCount = caption.instagramCaption?.length || 0;
+  const tiktokCount = caption.tiktokCaption?.length || 0;
+  const instagramTags = countCaptionHashtags(caption.instagramCaption);
+  const tiktokTags = countCaptionHashtags(caption.tiktokCaption);
+
+  return `
+    <form class="panel stack caption-bundle-card" data-caption-form="${mode}" data-caption-id="${escapeHtml(caption.id || "")}" data-caption-piece="${escapeHtml(caption.pieceId || "")}">
+      <div class="item-topline">
+        <span>${escapeHtml(pieceTitle)}</span>
+        <strong>${mode === "draft" ? "Rascunho da IA" : formatDateTime(caption.updatedAt)}</strong>
+      </div>
+
+      ${renderFieldGroup("Instagram", "Título, corpo e hashtags no mesmo campo, separados por linha em branco.", `
+        ${renderField("Legenda", `<textarea name="instagramCaption" class="caption-block-field" maxlength="${instagramRule.characterLimit}" placeholder="Título chamativo&#10;&#10;Corpo do texto&#10;&#10;#tag1 #tag2">${escapeHtml(caption.instagramCaption || "")}</textarea>`, {
+          hint: `${instagramCount}/${instagramRule.characterLimit} caracteres • ${instagramTags}/${instagramRule.hashtagLimit} hashtags`
+        })}
+      `)}
+
+      ${renderFieldGroup("TikTok", "Mesmo formato do Instagram: bloco único com quebras de linha.", `
+        ${renderField("Legenda", `<textarea name="tiktokCaption" class="caption-block-field" maxlength="${tiktokRule.characterLimit}" placeholder="Título chamativo&#10;&#10;Corpo do texto&#10;&#10;#tag1 #tag2">${escapeHtml(caption.tiktokCaption || "")}</textarea>`, {
+          hint: `${tiktokCount}/${tiktokRule.characterLimit} caracteres • ${tiktokTags}/${tiktokRule.hashtagLimit} hashtags`
+        })}
+      `)}
+
+      ${renderFieldGroup("YouTube Shorts", "Três campos separados para publicação no YouTube.", `
+        ${renderField("Título", `<input name="ytTitle" maxlength="${shortsRule.titleLimit}" value="${escapeHtml(caption.ytTitle || "")}" placeholder="Título SEO com hashtags (até 100 caracteres)" />`, {
+          hint: `${(caption.ytTitle || "").length}/${shortsRule.titleLimit} caracteres`
+        })}
+        ${renderField("Descrição", `<textarea name="ytDescription" class="caption-block-field" maxlength="${shortsRule.characterLimit}" placeholder="Descrição completa sobre o vídeo">${escapeHtml(caption.ytDescription || "")}</textarea>`, {
+          hint: `${(caption.ytDescription || "").length}/${shortsRule.characterLimit} caracteres`
+        })}
+        ${renderField("Tags", `<input name="ytTags" maxlength="${shortsRule.tagsLimit}" value="${escapeHtml(caption.ytTags || "")}" placeholder="palavra-chave, outra palavra, tema do vídeo" />`, {
+          hint: `${(caption.ytTags || "").length}/${shortsRule.tagsLimit} caracteres`
+        })}
+      `)}
+
+      <div class="inline-actions">
+        <button class="primary-action" type="submit">${mode === "draft" ? "Salvar legendas" : "Atualizar legendas"}</button>
+        ${mode === "draft" ? `<button class="ghost-action compact" type="button" data-discard-caption-draft>Descartar rascunho</button>` : `
+          <button class="ghost-action compact danger-text" type="button" data-delete-caption="${escapeHtml(caption.id)}">Excluir</button>
+        `}
+      </div>
+    </form>
   `;
 }
 
@@ -714,77 +959,6 @@ function renderAiPreview({ title, state: previewState, visible }) {
       ` : ""}
     </section>
   `;
-}
-
-function renderCaptionDraft(draft) {
-  const rule = platformRules[draft.platform];
-  return `
-    <form class="panel stack caption-card" data-caption-draft="${draft.id}">
-      <div class="item-topline">
-        <span>${rule.label}</span>
-        <strong>${draft.body.length}/${rule.characterLimit}</strong>
-      </div>
-      <input name="title" value="${escapeHtml(draft.title)}" />
-      <textarea name="body">${escapeHtml(draft.body)}</textarea>
-      <input name="seoTerms" value="${escapeHtml(draft.seoTerms.join(", "))}" placeholder="SEO separado por vírgula" />
-      <input name="hashtags" value="${escapeHtml(draft.hashtags.join(" "))}" placeholder="hashtags separadas por espaço" />
-      ${draft.platform === "shorts" ? `
-        <div class="stack shorts-fields">
-          <input name="ytTitle" value="${escapeHtml(draft.ytTitle)}" maxlength="100" placeholder="Título do Shorts (até 100 caracteres)" />
-          <textarea name="ytDescription" maxlength="5000" placeholder="Descrição do Shorts">${escapeHtml(draft.ytDescription)}</textarea>
-          <input name="ytTags" value="${escapeHtml(draft.ytTags)}" maxlength="500" placeholder="Tags do Shorts separadas por vírgula" />
-        </div>
-      ` : ""}
-      <div class="inline-actions">
-        <button class="primary-action" type="submit">Aceitar legenda</button>
-        <button class="ghost-action compact" type="button" data-discard-caption="${draft.id}">Descartar</button>
-      </div>
-    </form>
-  `;
-}
-
-function renderTextCard(text) {
-  const rule = platformRules[text.platform];
-  const characterCount = text.body.length;
-  const hashtagCount = text.hashtags.length;
-  const characterStatus = characterCount <= rule.characterLimit ? "ok" : "alert";
-  const hashtagStatus = !Number.isFinite(rule.hashtagLimit) || hashtagCount <= rule.hashtagLimit ? "ok" : "alert";
-
-  return `
-    <article class="item-card">
-      <div class="item-topline">
-        <span>${rule.label}</span>
-        <strong class="${characterStatus}">${characterCount}/${rule.characterLimit}</strong>
-      </div>
-      <h3>${escapeHtml(text.title)}</h3>
-      <small class="linked-video">Peça: ${escapeHtml(findPieceTitle(text.pieceId))}</small>
-      <p>${escapeHtml(text.body || "Sem corpo de legenda.")}</p>
-      <div class="keyword-line">${text.seoTerms.map(term => `<span>${escapeHtml(term)}</span>`).join("")}</div>
-      <div class="tag-row ${hashtagStatus}">${text.hashtags.map(tag => `<span>${escapeHtml(withHash(tag))}</span>`).join("")}</div>
-      ${text.platform === "shorts" ? `
-        <div class="stack mini">
-          <small><strong>Título:</strong> ${escapeHtml(text.ytTitle || "não preenchido")}</small>
-          <small><strong>Tags:</strong> ${escapeHtml(text.ytTags || "não preenchidas")}</small>
-        </div>
-      ` : ""}
-    </article>
-  `;
-}
-
-function renderFiles(query) {
-  const files = state.files.filter(file => matchesQuery([file.name, file.kind, file.version, file.location], query));
-  return files.length ? `
-    <div class="file-grid">
-      ${files.map(file => `
-        <article class="file-tile">
-          <span>${escapeHtml(file.kind || "arquivo")}</span>
-          <h3>${escapeHtml(file.name)}</h3>
-          <p>${escapeHtml(file.version || "sem versão")}</p>
-          <small>${escapeHtml(file.location || "sem local")} • ${escapeHtml(file.updatedAt || "sem data")}</small>
-        </article>
-      `).join("")}
-    </div>
-  ` : emptyState();
 }
 
 function renderPublications(query) {
@@ -850,14 +1024,12 @@ function renderLibrary(query) {
         <form class="panel stack" id="libraryForm">
           <h3>${editingLibraryItem ? "Editar item da biblioteca" : "Novo item da biblioteca"}</h3>
           <input type="hidden" name="libraryItemId" value="${escapeHtml(editingLibraryItem?.id || "")}" />
-          <input name="name" value="${escapeHtml(editingLibraryItem?.name || "")}" placeholder="Nome do item" required />
           <input type="hidden" name="category" value="${escapeHtml(currentLibraryCategory)}" />
-          <input name="notes" value="${escapeHtml(editingLibraryItem?.notes || "")}" placeholder="Notas" />
-          <input name="example" value="${escapeHtml(editingLibraryItem?.example || "")}" placeholder="Exemplo" />
-          <input name="context" value="${escapeHtml((editingLibraryItem?.context || []).join(", "))}" placeholder="Contextos separados por vírgula" />
-          <div class="checkbox-grid">
-            ${renderPlatformCheckbox("platforms", editingLibraryItem?.platforms || ["instagram", "tiktok", "shorts"])}
-          </div>
+          ${renderField("Nome", `<input name="name" value="${escapeHtml(editingLibraryItem?.name || "")}" required />`, { required: true })}
+          ${renderField("Notas", `<input name="notes" value="${escapeHtml(editingLibraryItem?.notes || "")}" />`)}
+          ${renderField("Exemplo", `<input name="example" value="${escapeHtml(editingLibraryItem?.example || "")}" />`)}
+          ${renderField("Contextos", `<input name="context" value="${escapeHtml((editingLibraryItem?.context || []).join(", "))}" />`, { hint: "Separados por vírgula" })}
+          ${renderField("Plataformas", `<div class="checkbox-grid">${renderPlatformCheckbox("platforms", editingLibraryItem?.platforms || ["instagram", "tiktok", "shorts"])}</div>`)}
           <div class="inline-actions">
             <button class="primary-action" type="submit">${editingLibraryItem ? "Salvar alterações" : "Salvar item"}</button>
             ${editingLibraryItem ? `<button class="ghost-action compact" type="button" id="cancelLibraryEdit">Cancelar</button>` : ""}
@@ -904,36 +1076,121 @@ function renderAssistant() {
     range: overviewRange,
     previousRange
   });
+  const { totals, rangeLabel, summary, bestContent, alert, nextSuggestion, comparison } = insightsReport;
+  const alertBadge = comparison.direction === "up"
+    ? { type: "up", text: `+${Math.abs(comparison.deltaPercent)}%` }
+    : comparison.direction === "down"
+      ? { type: "down", text: `-${Math.abs(comparison.deltaPercent)}%` }
+      : { type: "flat", text: "Estável" };
 
   return `
     <div class="assistant-page">
-      <section class="panel">
-        <h3>Visão geral diária</h3>
-        <p>${insightsReport.rangeLabel}</p>
-        <small>Janela fixa do dia 1 até hoje, usando só os insights do Instagram.</small>
+      <section class="panel assistant-hero">
+        <div class="assistant-hero-top">
+          <div>
+            <span class="kicker">Visão geral</span>
+            <h3>Insights do período</h3>
+            <p class="assistant-range">${escapeHtml(rangeLabel)} · dados do Instagram</p>
+          </div>
+        </div>
+        <div class="assistant-insights-grid assistant-insights-grid--metrics">
+          ${renderAssistantInsightCard({ title: "Alcance", iconName: "target", tone: "blue", value: totals.reach })}
+          ${renderAssistantInsightCard({ title: "Views", iconName: "eye", tone: "green", value: totals.views })}
+          ${renderAssistantInsightCard({ title: "Curtidas", iconName: "heart", tone: "rose", value: totals.likes })}
+          ${renderAssistantInsightCard({ title: "Salvos", iconName: "bookmark", tone: "olive", value: totals.saves })}
+          ${renderAssistantInsightCard({ title: "Shares", iconName: "send", tone: "orange", value: totals.shares })}
+        </div>
       </section>
+
+      <div class="assistant-insights-grid">
+        ${renderAssistantInsightCard({
+          title: "Resumo de desempenho",
+          iconName: "chart",
+          tone: "teal",
+          body: summary
+        })}
+        ${renderAssistantInsightCard({
+          title: "Melhor conteúdo",
+          iconName: "spark",
+          tone: "violet",
+          body: bestContent
+            ? bestContent.item.caption || "Conteúdo sem legenda"
+            : "Nenhum conteúdo com métricas no período.",
+          meta: bestContent ? `Engajamento relativo: ${formatPercent(bestContent.score)}` : ""
+        })}
+        ${renderAssistantInsightCard({
+          title: "Alerta de variação",
+          iconName: comparison.direction === "down" ? "wave" : "zap",
+          tone: comparison.direction === "down" ? "rose" : comparison.direction === "up" ? "green" : "amber",
+          body: alert,
+          badge: alertBadge
+        })}
+        ${renderAssistantInsightCard({
+          title: "Próximo conteúdo sugerido",
+          iconName: "lightbulb",
+          tone: "blue",
+          body: nextSuggestion
+        })}
+        ${renderAssistantInsightCard({
+          title: "Escopo atual",
+          iconName: "target",
+          tone: "amber",
+          body: "Esta área analisa apenas Instagram via Meta Graph API. O gerador de legendas foi movido para a aba de Legendas.",
+          meta: "Janela fixa do dia 1 até hoje."
+        })}
+      </div>
+    </div>
+  `;
+}
+
+function renderAssistantInsightCard({ title, iconName, tone, body = "", meta = "", badge = null, value = null }) {
+  const hasBadge = Boolean(badge);
+  const isMetric = value !== null && value !== undefined;
+  const bodyContent = isMetric
+    ? `<p class="assistant-insight-metric">${formatNumber(value)}</p>`
+    : `<p>${escapeHtml(body)}</p>`;
+
+  return `
+    <article class="assistant-insight-card tone-${tone}${isMetric ? " is-metric" : ""}">
+      <div class="assistant-insight-top${hasBadge ? " has-badge" : ""}">
+        <span class="insight-icon">${icon(iconName)}</span>
+        <div class="assistant-insight-heading">
+          <strong>${escapeHtml(title)}</strong>
+          ${badge ? `<span class="assistant-badge ${badge.type}">${escapeHtml(badge.text)}</span>` : ""}
+        </div>
+      </div>
+      ${bodyContent}
+      ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    </article>
+  `;
+}
+
+function renderSettings() {
+  const resolved = resolveTheme();
+  const resolvedLabel = resolved === "dark" ? "escuro" : "claro";
+  const options = [
+    { id: "light", label: "Claro", desc: "Fundo claro com alto contraste para ambientes iluminados." },
+    { id: "dark", label: "Escuro", desc: "Reduz o brilho da área de trabalho; a sidebar permanece escura." },
+    { id: "system", label: "Sistema", desc: "Segue a preferência de tema do seu dispositivo." }
+  ];
+
+  return `
+    <div class="settings-page">
       <section class="panel">
-        <h3>Resumo de desempenho</h3>
-        <p>${escapeHtml(insightsReport.summary)}</p>
-      </section>
-      <section class="panel">
-        <h3>Melhor conteúdo do período</h3>
-        ${insightsReport.bestContent ? `
-          <p>${escapeHtml(insightsReport.bestContent.item.caption || "Conteúdo sem legenda")}</p>
-          <small>Engajamento relativo: ${formatPercent(insightsReport.bestContent.score)}.</small>
-        ` : `<p>Nenhum conteúdo com métricas no período.</p>`}
-      </section>
-      <section class="panel">
-        <h3>Alerta de queda ou pico</h3>
-        <p>${escapeHtml(insightsReport.alert)}</p>
-      </section>
-      <section class="panel">
-        <h3>Sugestão de próximo conteúdo</h3>
-        <p>${escapeHtml(insightsReport.nextSuggestion)}</p>
-      </section>
-      <section class="panel">
-        <h3>Escopo atual</h3>
-        <p>Esta área analisa apenas Instagram via Meta Graph API. O gerador de legendas foi movido para a aba de Legendas.</p>
+        <h3>Aparência</h3>
+        <p>Tema aplicado agora: <strong>${resolvedLabel}</strong>${themePreference === "system" ? " (automático)" : ""}.</p>
+        <div class="settings-theme-grid" role="radiogroup" aria-label="Tema do ContentOS">
+          ${options.map(option => `
+            <label class="settings-theme-option ${themePreference === option.id ? "active" : ""}">
+              <input type="radio" name="appTheme" value="${option.id}" ${themePreference === option.id ? "checked" : ""} />
+              <span class="settings-theme-swatch settings-theme-swatch--${option.id}" aria-hidden="true"></span>
+              <span class="settings-theme-copy">
+                <strong>${option.label}</strong>
+                <span>${option.desc}</span>
+              </span>
+            </label>
+          `).join("")}
+        </div>
       </section>
     </div>
   `;
@@ -954,11 +1211,6 @@ function renderDashboard(query) {
 
   return `
     <div class="dashboard-page">
-      <section class="panel">
-        <h3>Escopo da integração</h3>
-        <p>Este dashboard mostra somente métricas do Instagram, lidas pela Meta Graph API. Não há dados de TikTok Analytics ou YouTube Studio aqui.</p>
-      </section>
-
       <div class="dashboard-toolbar">
         <div class="segmented-control" aria-label="Visão dos insights">
           <button class="${instagramView === "overview" ? "active" : ""}" type="button" data-instagram-view="overview">Geral</button>
@@ -1181,11 +1433,26 @@ function renderUsedComponentPerformance(pieceId) {
 
 function attachSectionEvents() {
   attachNavEvents();
+  attachCustomSelects();
+  attachTagChipFields();
   attachIdeaEvents();
   attachPieceEvents();
   attachTextEvents();
   attachLibraryEvents();
   attachDashboardEvents();
+  attachSettingsEvents();
+}
+
+function attachSettingsEvents() {
+  document.querySelectorAll('input[name="appTheme"]').forEach(input => {
+    const themeInput = /** @type {HTMLInputElement} */ (input);
+    themeInput.addEventListener("change", () => {
+      if (!themeInput.checked) return;
+      setThemePreference(themeInput.value);
+      updateMetric();
+      render();
+    });
+  });
 }
 
 function attachNavEvents() {
@@ -1260,7 +1527,14 @@ function attachIdeaEvents() {
     const actionButton = /** @type {HTMLButtonElement} */ (button);
     actionButton.addEventListener("click", async () => {
       const ideaId = actionButton.dataset.deleteIdea;
-      if (!ideaId || !window.confirm("Excluir esta ideia?")) return;
+      if (!ideaId) return;
+      const confirmed = await openConfirm({
+        title: "Excluir ideia",
+        message: "Excluir esta ideia?",
+        confirmLabel: "Excluir",
+        danger: true
+      });
+      if (!confirmed) return;
       state.ideas = state.ideas.filter(item => item.id !== ideaId);
       state.pieces = state.pieces.map(piece => piece.ideaId === ideaId ? { ...piece, ideaId: null } : piece);
       if (editingIdeaId === ideaId) editingIdeaId = null;
@@ -1328,26 +1602,61 @@ function attachPieceEvents() {
       event.preventDefault();
       const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
       const pieceId = currentForm.dataset.pieceId;
-      const structureItemId = String(new FormData(currentForm).get("structureItemId") || "").trim();
+      const formData = new FormData(currentForm);
+      const structureItemId = String(formData.get("structureItemId") || "").trim();
+      const hookItemId = String(formData.get("hookItemId") || "").trim();
+      const formatItemId = String(formData.get("formatItemId") || "").trim();
       const template = inferTemplateFromStructureId(structureItemId);
       upsertScriptFromForm(pieceId, template, currentForm);
       syncSingleLibraryComponent(pieceId, "script_structure", structureItemId, { required: true, used: true });
+      syncSingleLibraryComponent(pieceId, "hook", hookItemId, { required: true, used: true });
+      syncSingleLibraryComponent(pieceId, "format", formatItemId, { required: true, used: true });
       syncMultiLibraryComponents(pieceId, "cta", getCheckedValues(currentForm, "ctaIds"), { required: true, used: true });
       await persistAndRender();
     });
   });
 
-  document.querySelectorAll("[data-script-structure-select]").forEach(select => {
-    const structureSelect = /** @type {HTMLSelectElement} */ (select);
-    structureSelect.addEventListener("change", async () => {
-      const pieceId = structureSelect.dataset.scriptStructureSelect;
+  document.querySelectorAll("[data-script-structure-select]").forEach(input => {
+    input.addEventListener("change", async () => {
+      const pieceId = input.dataset.scriptStructureSelect;
       if (!pieceId) return;
-      const template = inferTemplateFromStructureId(structureSelect.value);
+      const form = /** @type {HTMLFormElement | null} */ (input.closest("form"));
       const script = getOrCreateScript(pieceId);
-      script.template = template;
-      script.fields = getTemplateDefaults(template);
-      syncSingleLibraryComponent(pieceId, "script_structure", structureSelect.value, { required: true, used: true });
+      const previousTemplate = script.template;
+      if (form) {
+        upsertScriptFromForm(pieceId, previousTemplate, form);
+      }
+      const structureItemId = input.value;
+      const template = inferTemplateFromStructureId(structureItemId);
+      if (template !== previousTemplate) {
+        script.template = template;
+        script.fields = getTemplateDefaults(template);
+      }
+      syncSingleLibraryComponent(pieceId, "script_structure", structureItemId, { required: true, used: true });
       await persistAndRender();
+    });
+  });
+
+  document.querySelectorAll("[data-piece-form='script']").forEach(form => {
+    const scriptForm = /** @type {HTMLFormElement} */ (form);
+    const pieceId = scriptForm.dataset.pieceId;
+    if (!pieceId) return;
+
+    scriptForm.querySelector('[name="hookItemId"]')?.addEventListener("change", () => {
+      const hookInput = /** @type {HTMLInputElement} */ (scriptForm.querySelector('[name="hookItemId"]'));
+      syncSingleLibraryComponent(pieceId, "hook", hookInput.value.trim(), { required: true, used: true });
+    });
+
+    scriptForm.querySelector('[name="formatItemId"]')?.addEventListener("change", () => {
+      const formatInput = /** @type {HTMLInputElement} */ (scriptForm.querySelector('[name="formatItemId"]'));
+      syncSingleLibraryComponent(pieceId, "format", formatInput.value.trim(), { required: true, used: true });
+    });
+
+    scriptForm.addEventListener("change", event => {
+      const target = /** @type {HTMLElement} */ (event.target);
+      if (target instanceof HTMLInputElement && target.name === "ctaIds") {
+        syncMultiLibraryComponents(pieceId, "cta", getCheckedValues(scriptForm, "ctaIds"), { required: true, used: true });
+      }
     });
   });
 
@@ -1359,8 +1668,7 @@ function attachPieceEvents() {
       if (!piece) return;
       const formData = new FormData(currentForm);
       piece.capture.driveUrl = String(formData.get("driveUrl") || "").trim();
-      const selectedOptions = Array.from(currentForm.querySelectorAll('select[name="cameraAngleIds"] option:checked')).map(option => /** @type {HTMLOptionElement} */ (option).value);
-      syncMultiLibraryComponents(piece.id, "camera_angle", selectedOptions, { required: true, used: true });
+      syncMultiLibraryComponents(piece.id, "camera_angle", getCheckedValues(currentForm, "cameraAngleIds"), { required: true, used: true });
       await persistAndRender();
     });
   });
@@ -1461,7 +1769,14 @@ function attachPieceEvents() {
     const deleteButton = /** @type {HTMLButtonElement} */ (button);
     deleteButton.addEventListener("click", async () => {
       const pieceId = deleteButton.dataset.deletePiece;
-      if (!pieceId || !window.confirm("Excluir esta peça e os vínculos relacionados?")) return;
+      if (!pieceId) return;
+      const confirmed = await openConfirm({
+        title: "Excluir peça",
+        message: "Excluir esta peça e os vínculos relacionados?",
+        confirmLabel: "Excluir",
+        danger: true
+      });
+      if (!confirmed) return;
       state.pieces = state.pieces.filter(item => item.id !== pieceId);
       state.scripts = state.scripts.filter(item => item.pieceId !== pieceId);
       state.pieceComponents = state.pieceComponents.filter(item => item.pieceId !== pieceId);
@@ -1480,7 +1795,10 @@ function attachPieceEvents() {
     addButton.addEventListener("click", async () => {
       const category = addButton.dataset.quickAddLibrary;
       if (!category) return;
-      await quickAddLibraryItem(category);
+      const item = await quickAddLibraryItem(category);
+      if (item) {
+        pendingLibrarySelection = { category, itemId: item.id };
+      }
       await persistAndRender();
     });
   });
@@ -1494,43 +1812,55 @@ function attachTextEvents() {
     void generateCaptionsWithAi(currentForm);
   });
 
-  generatorForm?.querySelector('select[name="pieceId"]')?.addEventListener("change", event => {
-    const select = /** @type {HTMLSelectElement} */ (event.currentTarget);
-    selectedPieceId = select.value || null;
-    captionDrafts = [];
+  generatorForm?.querySelector('input[name="pieceId"]')?.addEventListener("change", event => {
+    const input = /** @type {HTMLInputElement} */ (event.currentTarget);
+    selectedPieceId = input.value || null;
+    captionDraft = null;
     render();
   });
 
-  document.querySelectorAll("[data-caption-draft]").forEach(form => {
+  document.querySelectorAll("[data-caption-form]").forEach(form => {
     form.addEventListener("submit", async event => {
       event.preventDefault();
       const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
-      const draft = captionDrafts.find(item => item.id === currentForm.dataset.captionDraft);
-      if (!draft) return;
+      const pieceId = currentForm.dataset.captionPiece || null;
+      if (!pieceId) return;
       const formData = new FormData(currentForm);
-      state.texts.unshift({
-        id: createId("text"),
-        pieceId: draft.pieceId || null,
-        platform: draft.platform,
-        title: String(formData.get("title") || "").trim(),
-        body: String(formData.get("body") || "").trim(),
-        seoTerms: splitCommaList(formData.get("seoTerms")),
-        hashtags: splitHashList(formData.get("hashtags")),
+      upsertPieceCaption(pieceId, {
+        instagramCaption: String(formData.get("instagramCaption") || "").trim(),
+        tiktokCaption: String(formData.get("tiktokCaption") || "").trim(),
         ytTitle: String(formData.get("ytTitle") || "").trim(),
         ytDescription: String(formData.get("ytDescription") || "").trim(),
-        ytTags: String(formData.get("ytTags") || "").trim(),
-        updatedAt: new Date().toISOString()
-      });
-      captionDrafts = captionDrafts.filter(item => item.id !== draft.id);
+        ytTags: String(formData.get("ytTags") || "").trim()
+      }, currentForm.dataset.captionId || null);
+      captionDraft = null;
       await persistAndRender();
     });
   });
 
-  document.querySelectorAll("[data-discard-caption]").forEach(button => {
-    const discardButton = /** @type {HTMLButtonElement} */ (button);
-    discardButton.addEventListener("click", () => {
-      captionDrafts = captionDrafts.filter(item => item.id !== discardButton.dataset.discardCaption);
-      render();
+  document.querySelector("[data-discard-caption-draft]")?.addEventListener("click", () => {
+    captionDraft = null;
+    render();
+  });
+
+  document.querySelectorAll("[data-delete-caption]").forEach(button => {
+    const deleteButton = /** @type {HTMLButtonElement} */ (button);
+    deleteButton.addEventListener("click", async () => {
+      const captionId = deleteButton.dataset.deleteCaption;
+      const caption = state.texts.find(item => item.id === captionId);
+      if (!caption?.pieceId) return;
+      const confirmed = await openConfirm({
+        title: "Excluir legendas",
+        message: "Excluir este pacote de legendas do conteúdo?",
+        confirmLabel: "Excluir",
+        danger: true
+      });
+      if (!confirmed) return;
+      state.texts = state.texts.filter(item => item.pieceId !== caption.pieceId);
+      if (captionDraft?.pieceId === caption.pieceId) {
+        captionDraft = null;
+      }
+      await persistAndRender();
     });
   });
 }
@@ -1586,7 +1916,14 @@ function attachLibraryEvents() {
     const deleteButton = /** @type {HTMLButtonElement} */ (button);
     deleteButton.addEventListener("click", async () => {
       const itemId = deleteButton.dataset.deleteLibrary;
-      if (!itemId || !window.confirm("Excluir este item da biblioteca?")) return;
+      if (!itemId) return;
+      const confirmed = await openConfirm({
+        title: "Excluir item",
+        message: "Excluir este item da biblioteca?",
+        confirmLabel: "Excluir",
+        danger: true
+      });
+      if (!confirmed) return;
       state.library = state.library.filter(item => item.id !== itemId);
       state.pieceComponents = state.pieceComponents.map(component => component.libraryItemId === itemId ? { ...component, libraryItemId: null } : component);
       if (editingLibraryItemId === itemId) editingLibraryItemId = null;
@@ -1670,6 +2007,19 @@ function bindGlobalEvents() {
   window.addEventListener("hashchange", () => {
     currentSection = sanitizeSection(window.location.hash.replace("#", "") || "dashboard");
     render();
+  });
+
+  document.addEventListener("click", event => {
+    const target = /** @type {HTMLElement} */ (event.target);
+    if (!target.closest("[data-custom-select]")) {
+      closeAllCustomSelects();
+    }
+  });
+
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (themePreference === "system") {
+      applyTheme();
+    }
   });
 }
 
@@ -1835,44 +2185,6 @@ function improveScriptFields(template, fields, piece) {
   return next;
 }
 
-function buildCaptionDrafts({ piece, pieceId, platforms }) {
-  const selectedPlatforms = platforms.length ? platforms : ["instagram", "tiktok", "shorts"];
-  const context = assistantGateway.collectCaptionContext(state);
-  const title = piece?.title || "";
-  const theme = getPieceTheme(piece);
-  const scriptSummary = piece ? getScriptSummary(piece.id) : "";
-  return selectedPlatforms.map(platform => {
-    const rule = platformRules[platform];
-    const pieceTitle = piece?.title || "";
-    const draft = assistantGateway.improveCaption({
-      title,
-      theme: [theme, scriptSummary, piece?.brief.objective].filter(Boolean).join(". "),
-      platform,
-      pieceTitle,
-      rules: rule,
-      context
-    });
-    const hashtags = limitHashtags(draft.hashtags, rule.hashtagLimit);
-    const body = finalizeCaptionBody(draft.body, hashtags, rule.characterLimit);
-    const ytTitle = platform === "shorts" ? fitToLength(`${title} ${hashtags.slice(0, 3).join(" ")}`.trim(), 100) : "";
-    const ytDescription = platform === "shorts" ? `${body}\n\nPalavras-chave: ${draft.seoTerms.join(", ")}`.trim() : "";
-    const ytTags = platform === "shorts" ? draft.seoTerms.concat(hashtags.map(stripHash)).join(", ").slice(0, 500) : "";
-
-    return {
-      id: createId("draft"),
-      pieceId: pieceId || null,
-      platform,
-      title: draft.title || title,
-      body,
-      seoTerms: draft.seoTerms,
-      hashtags,
-      ytTitle,
-      ytDescription,
-      ytTags
-    };
-  });
-}
-
 async function generateScriptWithAi(pieceId, mode) {
   const piece = state.pieces.find(item => item.id === pieceId);
   if (!piece) return;
@@ -1901,7 +2213,12 @@ async function generateScriptWithAi(pieceId, mode) {
         title: piece.title,
         objective: piece.brief.objective,
         platform: piece.platforms,
-        idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null
+        idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null,
+        library: {
+          hooks: buildLibraryAiOptions("hook"),
+          formats: buildLibraryAiOptions("format"),
+          ctas: buildLibraryAiOptions("cta")
+        }
       }
     }
     : {
@@ -1909,7 +2226,12 @@ async function generateScriptWithAi(pieceId, mode) {
       fields: script.fields,
       title: piece.title,
       objective: piece.brief.objective,
-      idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null
+      idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null,
+      library: {
+        hooks: buildLibraryAiOptions("hook"),
+        formats: buildLibraryAiOptions("format"),
+        ctas: buildLibraryAiOptions("cta")
+      }
     };
 
   try {
@@ -1927,6 +2249,7 @@ async function generateScriptWithAi(pieceId, mode) {
       onDone: fullText => {
         const parsed = parseAiJson(fullText);
         applyScriptAiResult(piece.id, parsed);
+        skipPieceFormPhases.add(`${piece.id}:script`);
         aiDrafts.script = {
           ...aiDrafts.script,
           loading: false,
@@ -1962,7 +2285,7 @@ async function generateCaptionsWithAi(form) {
     text: "",
     error: ""
   };
-  captionDrafts = [];
+  captionDraft = null;
   render();
 
   try {
@@ -1973,20 +2296,18 @@ async function generateCaptionsWithAi(form) {
         script: getScriptSummary(piece.id),
         objective: piece.brief.objective,
         platforms,
+        tone: {
+          emojis: String(formData.get("emojiTone") || "normal"),
+          enthusiasm: String(formData.get("enthusiasmTone") || "moderado"),
+          voice: String(formData.get("voiceTone") || "casual")
+        },
         hashtags: assistantGateway.collectCaptionContext(state).hashtags.map(item => item.label),
         seo_terms: assistantGateway.collectCaptionContext(state).seoTerms.map(item => item.label)
       },
-      onChunk: (_chunk, fullText) => {
-        aiDrafts.caption = {
-          ...aiDrafts.caption,
-          loading: true,
-          text: fullText
-        };
-        render();
-      },
+      onChunk: () => {},
       onDone: fullText => {
         const parsed = parseAiJson(fullText);
-        captionDrafts = buildCaptionDraftsFromAi(parsed, pieceId, platforms);
+        captionDraft = buildCaptionDraftFromAi(parsed, pieceId, platforms);
         aiDrafts.caption = {
           ...aiDrafts.caption,
           loading: false,
@@ -2018,10 +2339,18 @@ function applyScriptAiResult(pieceId, parsed) {
     script.fields = normalizeAiScriptFields(script.template, parsed.fields);
   }
 
+  const hookId = resolveSuggestedLibraryIdList("gancho", parsed.suggested_hook, parsed.suggested_hooks)[0];
+  if (hookId) {
+    syncSingleLibraryComponent(pieceId, "hook", hookId, { required: true, used: true });
+  }
+
+  const formatId = resolveSuggestedLibraryIdList("formato", parsed.suggested_format, parsed.suggested_formats)[0];
+  if (formatId) {
+    syncSingleLibraryComponent(pieceId, "format", formatId, { required: true, used: true });
+  }
+
   if (Array.isArray(parsed.suggested_ctas)) {
-    const ctaIds = parsed.suggested_ctas
-      .map(item => findLibraryIdByName("cta", item.name))
-      .filter(Boolean);
+    const ctaIds = resolveSuggestedLibraryIdList("cta", null, parsed.suggested_ctas);
     if (ctaIds.length) {
       syncSuggestedCtas(pieceId, ctaIds);
     }
@@ -2037,26 +2366,34 @@ function applyScriptAiResult(pieceId, parsed) {
   script.updatedAt = new Date().toISOString();
 }
 
-function buildCaptionDraftsFromAi(parsed, pieceId, platforms) {
+function buildCaptionDraftFromAi(parsed, pieceId, platforms) {
   const selectedPlatforms = platforms.length ? platforms : ["instagram", "tiktok", "shorts"];
-  const platformPayload = parsed?.platforms || {};
+  const youtube = parsed?.youtube || parsed?.platforms?.shorts || {};
+  const legacyInstagram = parsed?.platforms?.instagram;
+  const legacyTiktok = parsed?.platforms?.tiktok;
 
-  return selectedPlatforms.map(platform => {
-    const data = platformPayload[platform] || {};
-    const hashtags = normalizeHashtags(data.hashtags || []);
-    return {
-      id: createId("draft"),
-      pieceId: pieceId || null,
-      platform,
-      title: String(data.title || ""),
-      body: String(data.body || ""),
-      seoTerms: Array.isArray(data.seo_terms) ? data.seo_terms.filter(Boolean) : [],
-      hashtags,
-      ytTitle: String(data.yt_title || ""),
-      ytDescription: String(data.yt_description || ""),
-      ytTags: String(data.yt_tags || "")
-    };
-  });
+  return {
+    pieceId,
+    instagramCaption: selectedPlatforms.includes("instagram")
+      ? String(parsed?.instagram || formatLegacyPlatformCaption(legacyInstagram) || "")
+      : "",
+    tiktokCaption: selectedPlatforms.includes("tiktok")
+      ? String(parsed?.tiktok || formatLegacyPlatformCaption(legacyTiktok) || "")
+      : "",
+    ytTitle: selectedPlatforms.includes("shorts") ? String(youtube.title || youtube.yt_title || "") : "",
+    ytDescription: selectedPlatforms.includes("shorts") ? String(youtube.description || youtube.yt_description || "") : "",
+    ytTags: selectedPlatforms.includes("shorts") ? String(youtube.tags || youtube.yt_tags || "") : ""
+  };
+}
+
+function formatLegacyPlatformCaption(data) {
+  if (!data || typeof data !== "object") return "";
+  const parts = [data.title, data.body].map(item => String(item || "").trim()).filter(Boolean);
+  const tags = (Array.isArray(data.hashtags) ? data.hashtags : [])
+    .map(tag => (String(tag).startsWith("#") ? tag : `#${tag}`))
+    .join(" ");
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
 }
 
 function parseAiJson(text) {
@@ -2097,9 +2434,254 @@ function normalizeHashtags(hashtags) {
     .map(stripHash);
 }
 
+function countCaptionPieces(currentState = state) {
+  return new Set((currentState.texts || []).map(text => text.pieceId).filter(Boolean)).size;
+}
+
+function getUnifiedCaptions() {
+  const seen = new Set();
+  return state.texts
+    .filter(text => text.pieceId && !seen.has(text.pieceId) && seen.add(text.pieceId))
+    .map(normalizeCaptionRecordApp)
+    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+}
+
+function getPieceCaption(pieceId) {
+  return getUnifiedCaptions().find(caption => caption.pieceId === pieceId) || null;
+}
+
+function normalizeCaptionRecordApp(text) {
+  return {
+    id: text.id,
+    pieceId: text.pieceId,
+    instagramCaption: text.instagramCaption || legacyInstagramCaptionApp(text),
+    tiktokCaption: text.tiktokCaption || legacyTiktokCaptionApp(text),
+    ytTitle: text.ytTitle || "",
+    ytDescription: text.ytDescription || "",
+    ytTags: text.ytTags || "",
+    updatedAt: text.updatedAt || ""
+  };
+}
+
+function legacyInstagramCaptionApp(text) {
+  if (text.platform !== "instagram") return "";
+  const parts = [text.title, text.body].map(item => String(item || "").trim()).filter(Boolean);
+  const tags = (text.hashtags || []).map(tag => (String(tag).startsWith("#") ? tag : `#${tag}`)).join(" ");
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
+}
+
+function legacyTiktokCaptionApp(text) {
+  if (text.platform !== "tiktok") return "";
+  const parts = [text.title, text.body].map(item => String(item || "").trim()).filter(Boolean);
+  const tags = (text.hashtags || []).map(tag => (String(tag).startsWith("#") ? tag : `#${tag}`)).join(" ");
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
+}
+
+function upsertPieceCaption(pieceId, data, captionId = null) {
+  const existing = state.texts.find(text => text.pieceId === pieceId) || null;
+  const next = {
+    instagramCaption: data.instagramCaption || "",
+    tiktokCaption: data.tiktokCaption || "",
+    ytTitle: data.ytTitle || "",
+    ytDescription: data.ytDescription || "",
+    ytTags: data.ytTags || "",
+    updatedAt: new Date().toISOString()
+  };
+
+  if (existing) {
+    Object.assign(existing, next);
+    state.texts = state.texts.filter(item => item.pieceId !== pieceId || item.id === existing.id);
+    return existing;
+  }
+
+  const created = {
+    id: captionId || createId("text"),
+    pieceId,
+    platform: "instagram",
+    title: findPieceTitle(pieceId),
+    body: "",
+    seoTerms: [],
+    hashtags: [],
+    ...next
+  };
+  state.texts.unshift(created);
+  return created;
+}
+
+function countCaptionHashtags(value) {
+  return (String(value || "").match(/#[\w\u00C0-\u024f]+/gu) || []).length;
+}
+
 function findLibraryIdByName(category, name) {
   const token = normalizeToken(name);
   return state.library.find(item => item.category === category && normalizeToken(item.name) === token)?.id || null;
+}
+
+function resolveSuggestedLibraryId(category, candidate) {
+  if (!candidate) return null;
+  const id = typeof candidate === "string" ? candidate : candidate.id;
+  const name = typeof candidate === "string" ? candidate : candidate.name;
+  if (id && state.library.some(item => item.id === id && item.category === category)) return id;
+  if (name) return findLibraryIdByName(category, name);
+  return null;
+}
+
+function resolveSuggestedLibraryIdList(category, single, list) {
+  const candidates = [];
+  if (single) candidates.push(single);
+  if (Array.isArray(list)) candidates.push(...list);
+  return [...new Set(candidates.map(item => resolveSuggestedLibraryId(category, item)).filter(Boolean))];
+}
+
+function buildLibraryAiOptions(slot) {
+  const category = libraryCategories.find(item => item.slot === slot)?.id;
+  if (!category) return [];
+
+  return getLibraryOptionsForSlot(slot)
+    .map(item => ({
+      id: item.id,
+      name: item.name,
+      notes: item.notes || "",
+      example: item.example || "",
+      metrics: getLibraryItemMetrics(item.id, slot)
+    }))
+    .sort((left, right) => scoreLibraryMetrics(right.metrics) - scoreLibraryMetrics(left.metrics));
+}
+
+function getLibraryItemMetrics(libraryItemId, slot) {
+  let count = 0;
+  const metrics = createEmptyMetrics();
+  for (const component of state.pieceComponents.filter(item => item.slot === slot && item.used && item.libraryItemId === libraryItemId)) {
+    count += 1;
+    addInstagramMetrics(metrics, getPieceInstagramMetrics(component.pieceId));
+  }
+  return { uses: count, ...metrics };
+}
+
+function scoreLibraryMetrics(metrics) {
+  return (metrics.views || 0) * 1.2 + (metrics.reach || 0) + (metrics.saves || 0) * 2 + (metrics.shares || 0) * 1.5 + (metrics.likes || 0) * 0.4;
+}
+
+function snapshotPieceForms() {
+  const snapshots = new Map();
+  document.querySelectorAll("form[data-piece-form]").forEach(formElement => {
+    const form = /** @type {HTMLFormElement} */ (formElement);
+    const pieceId = form.dataset.pieceId || "";
+    const phase = form.dataset.pieceForm || "";
+    if (!pieceId || !phase) return;
+
+    const fields = {};
+    form.querySelectorAll("input, textarea, select").forEach(element => {
+      const input = /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (element);
+      if (!input.name || input.type === "submit" || input.type === "button") return;
+
+      if (input.type === "checkbox") {
+        if (!fields[input.name]) fields[input.name] = [];
+        if (input.checked) fields[input.name].push(input.value);
+        return;
+      }
+
+      if (input.type === "radio") {
+        if (input.checked) fields[input.name] = input.value;
+        return;
+      }
+
+      fields[input.name] = input.value;
+    });
+
+    snapshots.set(`${pieceId}:${phase}`, fields);
+  });
+  return snapshots;
+}
+
+function restorePieceForms(snapshots, skipKeys = new Set()) {
+  snapshots.forEach((fields, key) => {
+    if (skipKeys.has(key)) return;
+    const [pieceId, phase] = key.split(":");
+    const form = document.querySelector(`form[data-piece-form="${phase}"][data-piece-id="${pieceId}"]`);
+    if (!form) return;
+
+    Object.entries(fields).forEach(([name, value]) => {
+      if (Array.isArray(value)) {
+        form.querySelectorAll(`input[type="checkbox"][name="${name}"]`).forEach(checkbox => {
+          const input = /** @type {HTMLInputElement} */ (checkbox);
+          input.checked = value.includes(input.value);
+        });
+        return;
+      }
+
+      const element = form.querySelector(`[name="${name}"]`);
+      if (!element) return;
+
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+        element.value = String(value);
+      }
+
+      if (element instanceof HTMLInputElement && element.type === "hidden") {
+        updateCustomSelectFromValue(element.closest("[data-custom-select]"), element.value);
+      }
+    });
+  });
+}
+
+function updateCustomSelectFromValue(field, value) {
+  if (!(field instanceof HTMLElement)) return;
+  const hiddenInput = field.querySelector('input[type="hidden"]');
+  const trigger = field.querySelector(".dropdown-trigger strong");
+  const options = field.querySelectorAll(".dropdown-option");
+  let label = "";
+  options.forEach(option => {
+    const optionButton = /** @type {HTMLButtonElement} */ (option);
+    const isSelected = (optionButton.dataset.value || "") === value;
+    optionButton.classList.toggle("selected", isSelected);
+    if (isSelected) label = optionButton.dataset.label || "";
+  });
+  if (hiddenInput instanceof HTMLInputElement) hiddenInput.value = value;
+  if (trigger instanceof HTMLElement) {
+    trigger.textContent = label || trigger.textContent || "";
+    trigger.classList.toggle("is-placeholder", !value);
+  }
+}
+
+function applyPendingLibrarySelection() {
+  if (!pendingLibrarySelection) return;
+  const { category, itemId } = pendingLibrarySelection;
+  pendingLibrarySelection = null;
+
+  const targets = {
+    gancho: { phase: "script", field: "hookItemId" },
+    formato: { phase: "script", field: "formatItemId" },
+    estrutura_roteiro: { phase: "script", field: "structureItemId" },
+    cta: { phase: "script", field: "ctaIds", multiple: true },
+    angulo_camera: { phase: "capture", field: "cameraAngleIds", multiple: true },
+    musica: { phase: "edit", field: "musicItemId" },
+    efeito_sonoro: { phase: "edit", field: "soundEffectItemId" }
+  };
+  const target = targets[category];
+  if (!target) return;
+
+  const pieceId = selectedPieceId;
+  if (!pieceId) return;
+
+  const form = document.querySelector(`form[data-piece-form="${target.phase}"][data-piece-id="${pieceId}"]`);
+  if (!form) return;
+
+  if (target.multiple) {
+    const checkbox = form.querySelector(`input[type="checkbox"][name="${target.field}"][value="${itemId}"]`);
+    if (checkbox instanceof HTMLInputElement) {
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return;
+  }
+
+  const input = form.querySelector(`[name="${target.field}"]`);
+  if (!(input instanceof HTMLInputElement)) return;
+  input.value = itemId;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  updateCustomSelectFromValue(input.closest("[data-custom-select]"), itemId);
 }
 
 function buildLibraryPerformanceRows(category) {
@@ -2254,7 +2836,7 @@ function buildPiecePhaseStatus(piece) {
       label: "Legendas",
       complete: isLegendasComplete(piece),
       warning: !isLegendasComplete(piece),
-      description: isLegendasComplete(piece) ? "Legendas já geradas." : "Gere as legendas por plataforma."
+      description: isLegendasComplete(piece) ? "Legendas já geradas." : "Gere as legendas do conteúdo."
     }
   ];
 }
@@ -2282,10 +2864,239 @@ function readScriptFields(template, form) {
 }
 
 function renderScriptField(script, field) {
-  if (field.multiline) {
-    return `<textarea name="${field.key}" placeholder="${field.label}">${escapeHtml((script.fields?.[field.key] || []).join("\n"))}</textarea>`;
-  }
-  return `<textarea name="${field.key}" placeholder="${field.label}">${escapeHtml(script.fields?.[field.key] || "")}</textarea>`;
+  const value = field.multiline
+    ? escapeHtml((script.fields?.[field.key] || []).join("\n"))
+    : escapeHtml(script.fields?.[field.key] || "");
+  const input = field.multiline
+    ? `<textarea name="${field.key}">${value}</textarea>`
+    : `<textarea name="${field.key}">${value}</textarea>`;
+  return renderField(field.label, input);
+}
+
+function renderField(label, inputHtml, { hint = "", inlineHint = false, required = false, className = "" } = {}) {
+  const labelMarkup = inlineHint && hint
+    ? `
+      <div class="field-label-row">
+        <span class="field-label">${escapeHtml(label)}${required ? '<span class="field-required" aria-hidden="true"> *</span>' : ""}</span>
+        <span class="field-hint inline">${escapeHtml(hint)}</span>
+      </div>
+    `
+    : `<span class="field-label">${escapeHtml(label)}${required ? '<span class="field-required" aria-hidden="true"> *</span>' : ""}</span>`;
+
+  return `
+    <div class="field ${className}">
+      ${labelMarkup}
+      ${!inlineHint && hint ? `<span class="field-hint">${escapeHtml(hint)}</span>` : ""}
+      ${inputHtml}
+    </div>
+  `;
+}
+
+function renderTagChip(tag) {
+  const token = stripHash(tag);
+  return `
+    <span class="tag-chip" data-tag-value="${escapeHtml(token)}">
+      <span>${escapeHtml(withHash(token))}</span>
+      <button type="button" class="tag-chip-remove" aria-label="Remover ${escapeHtml(token)}">×</button>
+    </span>
+  `;
+}
+
+function renderTagChipInput(name, tags = []) {
+  const normalizedTags = [...new Set((tags || []).map(stripHash).filter(Boolean))];
+  return `
+    <div class="tag-chip-field" data-tag-chip-field>
+      <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(normalizedTags.join(","))}" />
+      <div class="tag-chip-input" data-tag-chip-input>
+        <div class="tag-chip-list" data-tag-chip-list>
+          ${normalizedTags.map(tag => renderTagChip(tag)).join("")}
+        </div>
+        <input class="tag-chip-text" type="text" placeholder="Nova tag…" autocomplete="off" aria-label="Nova tag" />
+      </div>
+    </div>
+  `;
+}
+
+function attachTagChipFields() {
+  document.querySelectorAll("[data-tag-chip-field]").forEach(field => {
+    const hidden = /** @type {HTMLInputElement | null} */ (field.querySelector('input[type="hidden"]'));
+    const list = field.querySelector("[data-tag-chip-list]");
+    const textInput = /** @type {HTMLInputElement | null} */ (field.querySelector(".tag-chip-text"));
+    const chipInput = field.querySelector("[data-tag-chip-input]");
+    if (!hidden || !list || !textInput) return;
+
+    const getTags = () => [...list.querySelectorAll(".tag-chip")]
+      .map(chip => /** @type {HTMLElement} */ (chip).dataset.tagValue || "")
+      .filter(Boolean);
+
+    const syncHidden = () => {
+      hidden.value = getTags().join(",");
+    };
+
+    const bindRemoveButtons = () => {
+      list.querySelectorAll(".tag-chip-remove").forEach(button => {
+        const removeButton = /** @type {HTMLButtonElement} */ (button);
+        if (removeButton.dataset.bound === "true") return;
+        removeButton.dataset.bound = "true";
+        removeButton.addEventListener("click", event => {
+          event.preventDefault();
+          removeButton.closest(".tag-chip")?.remove();
+          syncHidden();
+          textInput.focus();
+        });
+      });
+    };
+
+    const addTag = rawValue => {
+      const token = stripHash(rawValue);
+      if (!token) return;
+      const exists = getTags().some(tag => normalizeToken(tag) === normalizeToken(token));
+      if (exists) return;
+      list.insertAdjacentHTML("beforeend", renderTagChip(token));
+      syncHidden();
+      bindRemoveButtons();
+    };
+
+    const commitInput = () => {
+      const pending = textInput.value.trim();
+      if (!pending) return;
+      addTag(pending);
+      textInput.value = "";
+    };
+
+    textInput.addEventListener("input", () => {
+      const value = textInput.value;
+      if (!value.includes(",")) return;
+      const parts = value.split(",");
+      parts.slice(0, -1).forEach(part => addTag(part));
+      textInput.value = parts[parts.length - 1].replace(/^\s+/, "");
+    });
+
+    textInput.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commitInput();
+      }
+      if (event.key === "Backspace" && !textInput.value) {
+        const chips = list.querySelectorAll(".tag-chip");
+        chips[chips.length - 1]?.remove();
+        syncHidden();
+      }
+    });
+
+    textInput.addEventListener("blur", () => {
+      commitInput();
+    });
+
+    chipInput?.addEventListener("click", () => {
+      textInput.focus();
+    });
+
+    bindRemoveButtons();
+  });
+}
+
+function renderFieldGroup(title, description, content) {
+  return `
+    <fieldset class="field-group">
+      <legend class="field-group-title">${escapeHtml(title)}</legend>
+      ${description ? `<p class="field-group-desc">${escapeHtml(description)}</p>` : ""}
+      <div class="field-group-body">
+        ${content}
+      </div>
+    </fieldset>
+  `;
+}
+
+function renderLibrarySingleSelect({ label, fieldName, category, value, options, placeholder, addLabel, dataset = "", hint = "", required = false }) {
+  const selectHtml = `
+    ${renderCustomSelect({
+      name: fieldName,
+      value,
+      placeholder,
+      options: options.map(option => ({ value: option.id, label: option.name })),
+      dataset
+    })}
+    <button class="ghost-action compact align-start" type="button" data-quick-add-library="${category}">${escapeHtml(addLabel)}</button>
+  `;
+  return renderField(label, selectHtml, { hint, required });
+}
+
+function renderCustomSelect({ name, value = "", placeholder = "Selecione…", options = [], dataset = "" }) {
+  const selected = options.find(option => option.value === value);
+  const displayValue = selected?.label || placeholder;
+  const datasetAttrs = dataset ? ` ${dataset}` : "";
+
+  return `
+    <div class="dropdown-field" data-custom-select>
+      <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}"${datasetAttrs} />
+      <button type="button" class="dropdown-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span class="dropdown-trigger-copy">
+          <strong class="${value ? "" : "is-placeholder"}">${escapeHtml(displayValue)}</strong>
+        </span>
+        <i aria-hidden="true"></i>
+      </button>
+      <div class="dropdown-menu" role="listbox">
+        <button type="button" class="dropdown-option ${!value ? "selected" : ""}" role="option" data-value="" data-label="${escapeHtml(placeholder)}">
+          ${escapeHtml(placeholder)}
+        </button>
+        ${options.map(option => `
+          <button type="button" class="dropdown-option ${option.value === value ? "selected" : ""}" role="option" data-value="${escapeHtml(option.value)}" data-label="${escapeHtml(option.label)}">
+            ${escapeHtml(option.label)}
+          </button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function attachCustomSelects() {
+  document.querySelectorAll("[data-custom-select]").forEach(field => {
+    const hiddenInput = /** @type {HTMLInputElement | null} */ (field.querySelector('input[type="hidden"]'));
+    const trigger = /** @type {HTMLButtonElement | null} */ (field.querySelector(".dropdown-trigger"));
+    const menu = field.querySelector(".dropdown-menu");
+    if (!hiddenInput || !trigger || !menu) return;
+
+    trigger.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const isOpen = field.classList.contains("open");
+      closeAllCustomSelects();
+      if (!isOpen) {
+        field.classList.add("open");
+        trigger.setAttribute("aria-expanded", "true");
+      }
+    });
+
+    menu.querySelectorAll(".dropdown-option").forEach(optionButton => {
+      const option = /** @type {HTMLButtonElement} */ (optionButton);
+      option.addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const nextValue = option.dataset.value || "";
+        const nextLabel = option.dataset.label || "";
+        hiddenInput.value = nextValue;
+        const strong = trigger.querySelector("strong");
+        if (strong) {
+          strong.textContent = nextLabel;
+          strong.classList.toggle("is-placeholder", !nextValue);
+        }
+        menu.querySelectorAll(".dropdown-option").forEach(item => {
+          item.classList.toggle("selected", item === option);
+        });
+        field.classList.remove("open");
+        trigger.setAttribute("aria-expanded", "false");
+        hiddenInput.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
+  });
+}
+
+function closeAllCustomSelects() {
+  document.querySelectorAll(".dropdown-field.open").forEach(field => {
+    field.classList.remove("open");
+    field.querySelector(".dropdown-trigger")?.setAttribute("aria-expanded", "false");
+  });
 }
 
 function getTemplateDefaults(template) {
@@ -2315,7 +3126,14 @@ function inferTemplateFromStructureId(structureItemId) {
 }
 
 async function quickAddLibraryItem(category) {
-  const name = window.prompt(`Novo item para ${getCategoryLabel(category)}:`);
+  const categoryLabel = getCategoryLabel(category);
+  const name = await openPrompt({
+    title: `Novo ${categoryLabel}`,
+    message: "Informe o nome do item para adicionar à biblioteca.",
+    label: "Nome",
+    placeholder: `Ex.: ${categoryLabel}`,
+    confirmLabel: "Adicionar"
+  });
   if (!name?.trim()) return null;
   const item = {
     id: createUuid(),
@@ -2329,18 +3147,6 @@ async function quickAddLibraryItem(category) {
   };
   state.library.unshift(item);
   return item;
-}
-
-function renderLibrarySingleSelect({ fieldName, category, value, options, placeholder, addLabel, dataset = "" }) {
-  return `
-    <div class="stack mini">
-      <select name="${fieldName}" ${dataset}>
-        <option value="">${escapeHtml(placeholder)}</option>
-        ${options.map(option => `<option value="${option.id}" ${option.id === value ? "selected" : ""}>${escapeHtml(option.name)}</option>`).join("")}
-      </select>
-      <button class="ghost-action compact align-start" type="button" data-quick-add-library="${category}">${escapeHtml(addLabel)}</button>
-    </div>
-  `;
 }
 
 function syncSingleLibraryComponent(pieceId, slot, libraryItemId, overrides = {}) {
@@ -2832,8 +3638,12 @@ function icon(name) {
     wave: `<svg viewBox="0 0 24 24" class="icon"><path d="M2 12c2-4 4 4 6 0s4-4 6 0 4 4 8 0"/></svg>`,
     music: `<svg viewBox="0 0 24 24" class="icon"><path d="M9 18V5l10-2v13"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/></svg>`,
     layout: `<svg viewBox="0 0 24 24" class="icon"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 10v10"/></svg>`,
+    settings: `<svg viewBox="0 0 24 24" class="icon"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>`,
     camera: `<svg viewBox="0 0 24 24" class="icon"><path d="M4 7h4l2-2h4l2 2h4v12H4V7Z"/><circle cx="12" cy="13" r="4"/></svg>`,
-    list: `<svg viewBox="0 0 24 24" class="icon"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>`
+    list: `<svg viewBox="0 0 24 24" class="icon"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>`,
+    check: `<svg viewBox="0 0 24 24" class="icon"><path d="m5 12 4 4L19 6"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" class="icon"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/></svg>`,
+    alert: `<svg viewBox="0 0 24 24" class="icon"><path d="M12 8v5"/><path d="M12 16h.01"/><path d="m10.3 4.3-.1.2-7 12.1A2 2 0 0 0 4.9 20h14.2a2 2 0 0 0 1.7-3.4l-7-12.1-.1-.2a2 2 0 0 0-3.4 0Z"/></svg>`
   };
   return icons[name] || icons.chart;
 }

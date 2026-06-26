@@ -4,17 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ContentOS</title>
+    <script>
+      (function () {
+        var pref = localStorage.getItem("contentos-theme");
+        var theme = pref === "dark" ? "dark" : pref === "light" ? "light"
+          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
+    <link rel="icon" href="./assets/brand/favicon-40-dark.png" type="image/png" sizes="40x40" />
+    <link rel="apple-touch-icon" href="./assets/brand/logo-square-dark.png" />
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
     <div id="app" class="shell">
       <aside class="sidebar" aria-label="Seções">
         <div class="brand">
-          <div class="brand-mark">CO</div>
-          <div class="brand-copy">
-            <h1>ContentOS</h1>
-            <p>central editorial</p>
-          </div>
+          <a class="brand-link" href="#dashboard" aria-label="ContentOS — ir para o dashboard">
+            <img class="brand-logo brand-logo-full" src="./assets/brand/logo-navbar-dark.png" alt="" width="200" height="56" />
+            <img class="brand-logo brand-logo-compact" src="./assets/brand/logo-square-dark.png" alt="" width="40" height="40" />
+          </a>
           <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Recolher menu" aria-expanded="true">
             <span aria-hidden="true">&#8249;</span>
           </button>
@@ -54,6 +63,8 @@
         <span>Comece por uma ideia solta ou por um vídeo em produção.</span>
       </div>
     </template>
+
+    <div id="modalRoot" class="modal-root" hidden aria-hidden="true"></div>
 
     <script src="./contentos-config.js"></script>
     <script src="./node_modules/@supabase/supabase-js/dist/umd/supabase.js"></script>

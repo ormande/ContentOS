@@ -18,7 +18,9 @@ export const assistantGateway = {
       bestContent,
       alert: buildAlert(comparison),
       nextSuggestion: buildNextSuggestion(topType, state),
-      totals: currentTotals
+      totals: currentTotals,
+      comparison,
+      topType
     };
   },
 

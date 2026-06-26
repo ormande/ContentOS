@@ -28,19 +28,21 @@ export const platformRules = {
     label: "Instagram",
     hashtagLimit: 5,
     characterLimit: 2200,
-    note: "até 5 hashtags"
+    note: "1 bloco: título, corpo e até 5 hashtags (uma palavra), separados por linha em branco"
   },
   tiktok: {
     label: "TikTok",
-    hashtagLimit: Infinity,
+    hashtagLimit: 5,
     characterLimit: 4000,
-    note: "hashtags livres"
+    note: "1 bloco: título, corpo e até 5 hashtags (uma palavra), separados por linha em branco"
   },
   shorts: {
     label: "YouTube Shorts",
-    hashtagLimit: 3,
-    characterLimit: 100,
-    note: "até 100 caracteres"
+    hashtagLimit: 5,
+    characterLimit: 5000,
+    titleLimit: 100,
+    tagsLimit: 500,
+    note: "título (100), descrição (5k) e tags (500)"
   }
 };
 
@@ -375,6 +377,8 @@ function fromTextRow(row) {
     body: row.body || "",
     seoTerms: row.seo_terms || [],
     hashtags: row.hashtags || [],
+    instagramCaption: row.instagram_caption || "",
+    tiktokCaption: row.tiktok_caption || "",
     ytTitle: row.yt_title || "",
     ytDescription: row.yt_description || "",
     ytTags: row.yt_tags || "",
@@ -386,16 +390,22 @@ function toTextRow(text) {
   return {
     id: text.id,
     piece_id: text.pieceId || null,
-    platform: text.platform,
-    title: text.title,
+    platform: text.platform || "instagram",
+    title: text.title || findPieceTitleFallback(text.pieceId),
     body: text.body || null,
     seo_terms: text.seoTerms || [],
     hashtags: text.hashtags || [],
+    instagram_caption: text.instagramCaption || null,
+    tiktok_caption: text.tiktokCaption || null,
     yt_title: text.ytTitle || null,
     yt_description: text.ytDescription || null,
     yt_tags: text.ytTags || null,
     updated_at: new Date().toISOString()
   };
+}
+
+function findPieceTitleFallback(pieceId) {
+  return pieceId ? "Legenda" : "Legenda";
 }
 
 function fromFileRow(row) {
@@ -550,6 +560,8 @@ function reconcileStateLinks(state) {
   const scriptIdByPiece = new Map();
   const componentIdsByPiece = new Map(nextState.pieces.map(piece => [piece.id, []]));
 
+  nextState.texts = consolidateTexts(nextState.texts);
+
   nextState.texts.forEach(text => {
     if (text.pieceId && textIdsByPiece.has(text.pieceId)) {
       textIdsByPiece.get(text.pieceId).push(text.id);
@@ -693,4 +705,78 @@ function hasMeaningfulContent(state) {
     || state?.publications?.length
     || state?.library?.length
   );
+}
+
+function consolidateTexts(texts) {
+  const grouped = new Map();
+  const orphans = [];
+
+  for (const text of texts || []) {
+    if (!text.pieceId) {
+      orphans.push(normalizeCaptionRecord(text));
+      continue;
+    }
+
+    if (!grouped.has(text.pieceId)) {
+      grouped.set(text.pieceId, normalizeCaptionRecord({
+        ...text,
+        instagramCaption: "",
+        tiktokCaption: "",
+        ytTitle: "",
+        ytDescription: "",
+        ytTags: ""
+      }));
+    }
+
+    const caption = grouped.get(text.pieceId);
+    if (text.instagramCaption || text.platform === "instagram") {
+      caption.instagramCaption = text.instagramCaption || legacyInstagramCaption(text) || caption.instagramCaption;
+    }
+    if (text.tiktokCaption || text.platform === "tiktok") {
+      caption.tiktokCaption = text.tiktokCaption || legacyTiktokCaption(text) || caption.tiktokCaption;
+    }
+    if (text.platform === "shorts" || text.ytTitle || text.ytDescription || text.ytTags) {
+      caption.ytTitle = text.ytTitle || caption.ytTitle;
+      caption.ytDescription = text.ytDescription || caption.ytDescription;
+      caption.ytTags = text.ytTags || caption.ytTags;
+    }
+    caption.updatedAt = [caption.updatedAt, text.updatedAt].filter(Boolean).sort().at(-1) || caption.updatedAt;
+    caption.id = caption.id || text.id;
+  }
+
+  return [...grouped.values(), ...orphans];
+}
+
+function normalizeCaptionRecord(text) {
+  return {
+    id: text.id,
+    pieceId: text.pieceId || null,
+    platform: text.platform || "instagram",
+    title: text.title || "",
+    body: text.body || "",
+    seoTerms: text.seoTerms || [],
+    hashtags: text.hashtags || [],
+    instagramCaption: text.instagramCaption || legacyInstagramCaption(text),
+    tiktokCaption: text.tiktokCaption || legacyTiktokCaption(text),
+    ytTitle: text.ytTitle || "",
+    ytDescription: text.ytDescription || "",
+    ytTags: text.ytTags || "",
+    updatedAt: text.updatedAt || ""
+  };
+}
+
+function legacyInstagramCaption(text) {
+  if (text.platform !== "instagram") return "";
+  const parts = [text.title, text.body].map(item => String(item || "").trim()).filter(Boolean);
+  const tags = (text.hashtags || []).map(tag => (String(tag).startsWith("#") ? tag : `#${tag}`)).join(" ");
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
+}
+
+function legacyTiktokCaption(text) {
+  if (text.platform !== "tiktok") return "";
+  const parts = [text.title, text.body].map(item => String(item || "").trim()).filter(Boolean);
+  const tags = (text.hashtags || []).map(tag => (String(tag).startsWith("#") ? tag : `#${tag}`)).join(" ");
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
 }
