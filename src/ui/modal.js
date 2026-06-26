@@ -74,6 +74,10 @@ function mountModal({ title, bodyHtml, actionsHtml, onReady }) {
   });
 }
 
+/**
+ * @param {{ title?: string; message?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }} [options]
+ * @returns {Promise<boolean>}
+ */
 export function openConfirm({
   title = "Confirmar",
   message,
@@ -96,6 +100,10 @@ export function openConfirm({
   });
 }
 
+/**
+ * @param {{ title?: string; message?: string; label?: string; placeholder?: string; defaultValue?: string; confirmLabel?: string; cancelLabel?: string }} [options]
+ * @returns {Promise<string|null>}
+ */
 export function openPrompt({
   title,
   message = "",

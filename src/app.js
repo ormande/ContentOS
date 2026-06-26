@@ -1617,16 +1617,17 @@ function attachPieceEvents() {
   });
 
   document.querySelectorAll("[data-script-structure-select]").forEach(input => {
-    input.addEventListener("change", async () => {
-      const pieceId = input.dataset.scriptStructureSelect;
+    const structureInput = /** @type {HTMLInputElement} */ (input);
+    structureInput.addEventListener("change", async () => {
+      const pieceId = structureInput.dataset.scriptStructureSelect;
       if (!pieceId) return;
-      const form = /** @type {HTMLFormElement | null} */ (input.closest("form"));
+      const form = /** @type {HTMLFormElement | null} */ (structureInput.closest("form"));
       const script = getOrCreateScript(pieceId);
       const previousTemplate = script.template;
       if (form) {
         upsertScriptFromForm(pieceId, previousTemplate, form);
       }
-      const structureItemId = input.value;
+      const structureItemId = structureInput.value;
       const template = inferTemplateFromStructureId(structureItemId);
       if (template !== previousTemplate) {
         script.template = template;
@@ -2574,21 +2575,28 @@ function snapshotPieceForms() {
 
     const fields = {};
     form.querySelectorAll("input, textarea, select").forEach(element => {
-      const input = /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (element);
-      if (!input.name || input.type === "submit" || input.type === "button") return;
+      if (element instanceof HTMLInputElement) {
+        if (!element.name || element.type === "submit" || element.type === "button") return;
 
-      if (input.type === "checkbox") {
-        if (!fields[input.name]) fields[input.name] = [];
-        if (input.checked) fields[input.name].push(input.value);
+        if (element.type === "checkbox") {
+          if (!fields[element.name]) fields[element.name] = [];
+          if (element.checked) fields[element.name].push(element.value);
+          return;
+        }
+
+        if (element.type === "radio") {
+          if (element.checked) fields[element.name] = element.value;
+          return;
+        }
+
+        fields[element.name] = element.value;
         return;
       }
 
-      if (input.type === "radio") {
-        if (input.checked) fields[input.name] = input.value;
-        return;
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+        if (!element.name) return;
+        fields[element.name] = element.value;
       }
-
-      fields[input.name] = input.value;
     });
 
     snapshots.set(`${pieceId}:${phase}`, fields);
@@ -2925,7 +2933,7 @@ function attachTagChipFields() {
     const chipInput = field.querySelector("[data-tag-chip-input]");
     if (!hidden || !list || !textInput) return;
 
-    const getTags = () => [...list.querySelectorAll(".tag-chip")]
+    const getTags = () => Array.from(list.querySelectorAll(".tag-chip"))
       .map(chip => /** @type {HTMLElement} */ (chip).dataset.tagValue || "")
       .filter(Boolean);
 
