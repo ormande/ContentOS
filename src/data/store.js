@@ -3,6 +3,8 @@ import { isSupabaseConfigured, requireSupabase } from "./supabaseClient.js";
 const emptyState = {
   ideas: [],
   pieces: [],
+  scripts: [],
+  pieceComponents: [],
   texts: [],
   files: [],
   publications: [],
@@ -40,6 +42,18 @@ export const platformRules = {
   }
 };
 
+export const ideaStatuses = ["disponivel", "em_producao", "reaproveitavel"];
+export const pieceComponentSlots = [
+  "hook",
+  "format",
+  "script_structure",
+  "camera_angle",
+  "music",
+  "sound_effect",
+  "cta",
+  "text_header"
+];
+
 export function createEmptyState() {
   return clone(emptyState);
 }
@@ -54,6 +68,8 @@ export async function loadState() {
   const [
     ideas,
     pieces,
+    scripts,
+    pieceComponents,
     texts,
     files,
     publications,
@@ -61,8 +77,10 @@ export async function loadState() {
     aiSettings
   ] = await Promise.all([
     selectAll(client, "ideas", "created_at", { ascending: false }),
-    selectAll(client, "pieces", "due", { ascending: true, nullsFirst: false }),
-    selectAll(client, "texts", "title", { ascending: true }),
+    selectAll(client, "pieces", "updated_at", { ascending: false }),
+    selectAll(client, "scripts", "updated_at", { ascending: false }),
+    selectAll(client, "piece_components", "order_index", { ascending: true }),
+    selectAll(client, "texts", "updated_at", { ascending: false }),
     selectAll(client, "files", "updated_at", { ascending: false }),
     selectAll(client, "publications", "published_at", { ascending: false }),
     selectAll(client, "library", "created_at", { ascending: false }),
@@ -74,6 +92,8 @@ export async function loadState() {
   return reconcileStateLinks({
     ideas: ideas.map(fromIdeaRow),
     pieces: pieces.map(fromPieceRow),
+    scripts: scripts.map(fromScriptRow),
+    pieceComponents: pieceComponents.map(fromPieceComponentRow),
     texts: texts.map(fromTextRow),
     files: files.map(fromFileRow),
     publications: publications.map(fromPublicationRow),
@@ -89,16 +109,18 @@ export async function saveState(state) {
   }
 
   const client = requireSupabase();
-
   const nextState = reconcileStateLinks(state);
 
   await syncRows(client, "ideas", nextState.ideas.map(toIdeaRow));
   await syncRows(client, "pieces", nextState.pieces.map(toPieceRow));
+  await syncRows(client, "scripts", nextState.scripts.map(toScriptRow));
+  await syncRows(client, "piece_components", nextState.pieceComponents.map(toPieceComponentRow));
   await syncRows(client, "texts", nextState.texts.map(toTextRow));
   await syncRows(client, "files", nextState.files.map(toFileRow));
   await syncRows(client, "publications", nextState.publications.map(toPublicationRow));
   await upsertRows(client, "library", nextState.library.map(toLibraryRow).filter(Boolean), "category,name");
   await upsertRows(client, "ai_settings", [toAiRow(nextState.ai)]);
+  await syncInstagramMediaLinks(client, nextState.pieces);
 }
 
 export function createId(prefix) {
@@ -107,11 +129,7 @@ export function createId(prefix) {
 
 async function selectAll(client, table, orderColumn, orderOptions) {
   let query = client.from(table).select("*");
-
-  if (orderColumn) {
-    query = query.order(orderColumn, orderOptions);
-  }
-
+  if (orderColumn) query = query.order(orderColumn, orderOptions);
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
@@ -146,10 +164,47 @@ async function syncRows(client, table, rows) {
 
 async function upsertRows(client, table, rows, onConflict) {
   if (!rows.length) return;
-
   const options = onConflict ? { onConflict } : undefined;
   const { error } = await client.from(table).upsert(rows, options);
   if (error) throw error;
+}
+
+async function syncInstagramMediaLinks(client, pieces) {
+  const { data: mediaRows, error } = await client
+    .from("instagram_media")
+    .select("id, ig_media_id, permalink, piece_id");
+
+  if (error) {
+    console.warn("Não foi possível atualizar os vínculos das mídias do Instagram.", error);
+    return;
+  }
+
+  const pieceByMediaId = new Map();
+  const pieceByPermalink = new Map();
+
+  for (const piece of pieces) {
+    const mediaId = normalizeText(piece.distribution?.igMediaId);
+    const permalink = normalizeText(piece.distribution?.permalink);
+    if (mediaId) pieceByMediaId.set(mediaId, piece.id);
+    if (permalink) pieceByPermalink.set(permalink, piece.id);
+  }
+
+  for (const media of mediaRows || []) {
+    const nextPieceId = pieceByMediaId.get(normalizeText(media.ig_media_id))
+      || pieceByPermalink.get(normalizeText(media.permalink))
+      || null;
+
+    if (nextPieceId === (media.piece_id || null)) continue;
+
+    const { error: updateError } = await client
+      .from("instagram_media")
+      .update({ piece_id: nextPieceId })
+      .eq("id", media.id);
+
+    if (updateError) {
+      console.warn(`Não foi possível atualizar o vínculo da mídia ${media.id}.`, updateError);
+    }
+  }
 }
 
 function fromIdeaRow(row) {
@@ -157,9 +212,11 @@ function fromIdeaRow(row) {
     id: row.id,
     title: row.title,
     source: row.source || "",
+    description: row.description || "",
     angle: row.angle || "",
     tags: row.tags || [],
-    priority: row.priority || "",
+    priority: row.priority || "média",
+    status: ideaStatuses.includes(row.status) ? row.status : "disponivel",
     createdAt: row.created_at || ""
   };
 }
@@ -169,9 +226,11 @@ function toIdeaRow(idea) {
     id: idea.id,
     title: idea.title,
     source: idea.source || null,
+    description: idea.description || null,
     angle: idea.angle || null,
     tags: idea.tags || [],
     priority: idea.priority || null,
+    status: ideaStatuses.includes(idea.status) ? idea.status : "disponivel",
     created_at: idea.createdAt || new Date().toISOString().slice(0, 10)
   };
 }
@@ -180,14 +239,20 @@ function fromPieceRow(row) {
   return {
     id: row.id,
     title: row.title,
-    format: row.format || "",
-    moment: row.moment || "",
-    owner: row.owner || "",
-    due: row.due || "",
     ideaId: row.idea_id || null,
-    materials: row.materials || [],
-    textIds: row.text_ids || [],
-    publicationIds: row.publication_ids || []
+    platforms: row.platforms || [],
+    currentPhase: row.current_phase || "brief",
+    brief: normalizeBrief(row.brief, row),
+    capture: normalizeCapture(row.capture, row),
+    edit: normalizeEdit(row.edit_phase, row),
+    distribution: normalizeDistribution(row.distribution),
+    due: row.due || "",
+    owner: row.owner || "",
+    textIds: [],
+    publicationIds: [],
+    scriptId: null,
+    componentIds: [],
+    updatedAt: row.updated_at || ""
   };
 }
 
@@ -195,14 +260,62 @@ function toPieceRow(piece) {
   return {
     id: piece.id,
     title: piece.title,
-    format: piece.format || null,
-    moment: piece.moment || null,
-    owner: piece.owner || null,
-    due: piece.due || null,
     idea_id: piece.ideaId || null,
-    materials: piece.materials || [],
-    text_ids: piece.textIds || [],
-    publication_ids: piece.publicationIds || []
+    platforms: normalizePlatformList(piece.platforms),
+    current_phase: piece.currentPhase || "brief",
+    brief: normalizeBrief(piece.brief, piece),
+    capture: normalizeCapture(piece.capture, piece),
+    edit_phase: normalizeEdit(piece.edit, piece),
+    distribution: normalizeDistribution(piece.distribution),
+    due: piece.due || null,
+    owner: piece.owner || null,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function fromScriptRow(row) {
+  return {
+    id: row.id,
+    pieceId: row.piece_id,
+    template: row.template || "storytelling",
+    fields: normalizeScriptFields(row.fields, row.template),
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function toScriptRow(script) {
+  return {
+    id: script.id,
+    piece_id: script.pieceId,
+    template: script.template,
+    fields: normalizeScriptFields(script.fields, script.template),
+    updated_at: new Date().toISOString()
+  };
+}
+
+function fromPieceComponentRow(row) {
+  return {
+    id: row.id,
+    pieceId: row.piece_id,
+    libraryItemId: row.library_item_id || null,
+    slot: pieceComponentSlots.includes(row.slot) ? row.slot : "hook",
+    required: Boolean(row.required),
+    used: Boolean(row.used),
+    notes: row.notes || "",
+    orderIndex: Number(row.order_index || 0)
+  };
+}
+
+function toPieceComponentRow(component) {
+  return {
+    id: component.id,
+    piece_id: component.pieceId,
+    library_item_id: component.libraryItemId || null,
+    slot: pieceComponentSlots.includes(component.slot) ? component.slot : "hook",
+    required: Boolean(component.required),
+    used: Boolean(component.used),
+    notes: component.notes || null,
+    order_index: Number(component.orderIndex || 0)
   };
 }
 
@@ -214,7 +327,11 @@ function fromTextRow(row) {
     title: row.title,
     body: row.body || "",
     seoTerms: row.seo_terms || [],
-    hashtags: row.hashtags || []
+    hashtags: row.hashtags || [],
+    ytTitle: row.yt_title || "",
+    ytDescription: row.yt_description || "",
+    ytTags: row.yt_tags || "",
+    updatedAt: row.updated_at || ""
   };
 }
 
@@ -226,7 +343,11 @@ function toTextRow(text) {
     title: text.title,
     body: text.body || null,
     seo_terms: text.seoTerms || [],
-    hashtags: text.hashtags || []
+    hashtags: text.hashtags || [],
+    yt_title: text.ytTitle || null,
+    yt_description: text.ytDescription || null,
+    yt_tags: text.ytTags || null,
+    updated_at: new Date().toISOString()
   };
 }
 
@@ -291,7 +412,6 @@ function fromLibraryRow(row) {
 
 function toLibraryRow(item) {
   if (!item.name || !item.category) return null;
-
   return {
     id: isUuid(item.id) ? item.id : undefined,
     name: item.name,
@@ -306,7 +426,6 @@ function toLibraryRow(item) {
 
 function fromAiRow(row) {
   if (!row) return clone(emptyState.ai);
-
   return {
     enabled: Boolean(row.enabled),
     provider: row.provider || null,
@@ -325,18 +444,69 @@ function toAiRow(ai) {
 
 function defaultMetrics() {
   return {
+    reach: 0,
     views: 0,
     likes: 0,
     saves: 0,
     shares: 0,
-    comments: 0
+    comments: 0,
+    profileViews: 0,
+    followers: 0,
+    impressions: 0
   };
+}
+
+function normalizeBrief(brief, fallback = {}) {
+  return {
+    objective: brief?.objective || "",
+    promise: brief?.promise || "",
+    platforms: normalizePlatformList(brief?.platforms || fallback?.platforms || []),
+    cta: brief?.cta || fallback?.brief?.cta || "",
+    owner: brief?.owner || fallback?.owner || ""
+  };
+}
+
+function normalizeCapture(capture, fallback = {}) {
+  return {
+    cameraPlan: capture?.cameraPlan || "",
+    takes: capture?.takes || "",
+    materials: capture?.materials || listToMultiline(fallback?.materials || []),
+    driveUrl: capture?.driveUrl || ""
+  };
+}
+
+function normalizeEdit(edit, fallback = {}) {
+  return {
+    notes: edit?.notes || "",
+    musicDirection: edit?.musicDirection || "",
+    soundDirection: edit?.soundDirection || "",
+    textHeaders: edit?.textHeaders || ""
+  };
+}
+
+function normalizeDistribution(distribution) {
+  return {
+    igMediaId: distribution?.igMediaId || "",
+    permalink: distribution?.permalink || ""
+  };
+}
+
+function normalizeScriptFields(fields, template) {
+  const nextFields = { ...getTemplateDefaults(template), ...(fields || {}) };
+  if (template === "tutorial") {
+    nextFields.steps = Array.isArray(nextFields.steps)
+      ? nextFields.steps
+      : String(nextFields.steps || "").split("\n").map(item => item.trim()).filter(Boolean);
+  }
+  return nextFields;
 }
 
 function reconcileStateLinks(state) {
   const nextState = clone(state);
   const textIdsByPiece = new Map(nextState.pieces.map(piece => [piece.id, []]));
   const publicationIdsByPiece = new Map(nextState.pieces.map(piece => [piece.id, []]));
+  const scriptIdByPiece = new Map();
+  const componentIdsByPiece = new Map(nextState.pieces.map(piece => [piece.id, []]));
 
   nextState.texts.forEach(text => {
     if (text.pieceId && textIdsByPiece.has(text.pieceId)) {
@@ -350,13 +520,75 @@ function reconcileStateLinks(state) {
     }
   });
 
+  nextState.scripts.forEach(script => {
+    scriptIdByPiece.set(script.pieceId, script.id);
+  });
+
+  nextState.pieceComponents.forEach(component => {
+    if (component.pieceId && componentIdsByPiece.has(component.pieceId)) {
+      componentIdsByPiece.get(component.pieceId).push(component.id);
+    }
+  });
+
   nextState.pieces = nextState.pieces.map(piece => ({
     ...piece,
+    brief: normalizeBrief(piece.brief, piece),
+    capture: normalizeCapture(piece.capture, piece),
+    edit: normalizeEdit(piece.edit, piece),
+    distribution: normalizeDistribution(piece.distribution),
+    platforms: normalizePlatformList(piece.platforms || piece.brief?.platforms || []),
     textIds: textIdsByPiece.get(piece.id) || [],
-    publicationIds: publicationIdsByPiece.get(piece.id) || []
+    publicationIds: publicationIdsByPiece.get(piece.id) || [],
+    scriptId: scriptIdByPiece.get(piece.id) || null,
+    componentIds: componentIdsByPiece.get(piece.id) || []
+  }));
+
+  nextState.ideas = nextState.ideas.map(idea => ({
+    ...idea,
+    status: ideaStatuses.includes(idea.status) ? idea.status : "disponivel"
   }));
 
   return nextState;
+}
+
+function getTemplateDefaults(template) {
+  if (template === "educacional") {
+    return {
+      problema: "",
+      solucao: "",
+      prova: "",
+      cta: ""
+    };
+  }
+
+  if (template === "tutorial") {
+    return {
+      steps: []
+    };
+  }
+
+  return {
+    oQueAconteceu: "",
+    onde: "",
+    quando: "",
+    quemEstava: "",
+    comoFoi: "",
+    desfecho: "",
+    aprendizado: ""
+  };
+}
+
+function normalizePlatformList(platforms) {
+  const unique = new Set((platforms || []).filter(Boolean));
+  return [...unique].filter(item => ["instagram", "tiktok", "shorts"].includes(item));
+}
+
+function normalizeText(value) {
+  return String(value || "").trim();
+}
+
+function listToMultiline(items) {
+  return Array.isArray(items) ? items.filter(Boolean).join("\n") : "";
 }
 
 function isUuid(value) {

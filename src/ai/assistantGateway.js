@@ -56,18 +56,19 @@ export const assistantGateway = {
     const hook = title?.trim() || `A ideia de hoje sobre ${theme}`;
     const body = [
       `Gancho: ${hook}.`,
-      `Corpo: ${theme}. ${pieceTitle ? `O vídeo "${pieceTitle}" entra como prova visual.` : "Mostre um exemplo prático logo no primeiro bloco."}`,
-      "CTA: salva este post se quiser repetir a estrutura no próximo conteúdo."
+      `Corpo: ${theme}. ${pieceTitle ? `A peça "${pieceTitle}" entra como prova visual.` : "Mostre um exemplo prático logo no primeiro bloco."}`,
+      "CTA: salva este conteúdo se quiser repetir a estrutura depois."
     ].join(" ");
 
     const chosenSeo = (context?.seoTerms || []).slice(0, 3).map(item => item.label);
-    const chosenHashtags = (context?.hashtags || []).slice(0, Math.min(rules?.hashtagLimit || 0, 5)).map(item => item.label);
-    const caption = fitCaptionToRule(body, rules?.characterLimit || 2200);
+    const chosenHashtags = (context?.hashtags || [])
+      .slice(0, Math.min(rules?.hashtagLimit || 0, 5))
+      .map(item => item.label);
 
     return {
       title: hook,
       platform,
-      body: caption,
+      body: fitCaptionToRule(body, rules?.characterLimit || 2200),
       seoTerms: chosenSeo,
       hashtags: chosenHashtags
     };
@@ -153,7 +154,7 @@ function buildComparison(currentTotals, previousTotals) {
 }
 
 function buildSummaryParagraph(totals, topType) {
-  return `No período de ${formatContentType(topType)}, o app leu ${formatNumber(totals.reach)} de alcance, ${formatNumber(totals.views)} views, ${formatNumber(totals.likes)} curtidas, ${formatNumber(totals.saves)} salvamentos e ${formatNumber(totals.shares)} compartilhamentos. O destaque ficou para os salvamentos, que costumam sinalizar conteúdo de valor e consulta.`;
+  return `No período de ${formatContentType(topType)}, o app leu ${formatNumber(totals.reach)} de alcance, ${formatNumber(totals.views)} views, ${formatNumber(totals.likes)} curtidas, ${formatNumber(totals.saves)} salvamentos e ${formatNumber(totals.shares)} compartilhamentos. O destaque fica para os salvamentos, que costumam sinalizar conteúdo de valor.`;
 }
 
 function buildAlert(comparison) {
@@ -162,7 +163,7 @@ function buildAlert(comparison) {
   }
 
   if (comparison.direction === "down") {
-    return `Queda detectada: o período atual está ${Math.abs(comparison.deltaPercent)}% abaixo do anterior. Vale revisar formato, gancho e timing do conteúdo.`;
+    return `Queda detectada: o período atual está ${Math.abs(comparison.deltaPercent)}% abaixo do anterior. Vale revisar formato, gancho e timing.`;
   }
 
   return "Sem variação brusca no período. O desempenho está estável em relação à janela anterior.";

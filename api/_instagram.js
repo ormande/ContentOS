@@ -118,6 +118,7 @@ export async function handleDashboard(response) {
 
     return {
       id: item.id,
+      pieceId: item.piece_id || null,
       instagramMediaId: item.ig_media_id,
       contentType: item.media_type || "unknown",
       caption: item.caption || "",

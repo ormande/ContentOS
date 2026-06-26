@@ -13,7 +13,7 @@ export const supabase = isSupabaseConfigured
 
 export function requireSupabase() {
   if (!supabase) {
-    throw new Error("Supabase não configurado. Confira SUPABASE_URL e SUPABASE_ANON_KEY no .env.");
+    throw new Error("Supabase não configurado. Confira SUPABASE_URL e SUPABASE_ANON_KEY no ambiente.");
   }
 
   return supabase;
