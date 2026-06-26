@@ -7,10 +7,11 @@ const sections = [
   { id: "ideas", label: "Ideias", icon: "lightbulb", kicker: "captura", title: "Ideias", metric: state => `${state.ideas.length} ideias` },
   { id: "pieces", label: "Vídeos", icon: "layers", kicker: "produção", title: "Vídeos em movimento", metric: state => `${state.pieces.length} vídeos` },
   { id: "texts", label: "Legendas", icon: "text", kicker: "distribuição", title: "Legendas por plataforma", metric: state => `${state.texts.length} legendas` },
+  { id: "tags", label: "Tags", icon: "target", kicker: "análise", title: "Tags e Componentes", metric: state => `${buildTagPerformanceRows(state).length} termos` },
   { id: "files", label: "Arquivos", icon: "folder", kicker: "materiais", title: "Versões e arquivos", metric: state => `${state.files.length} arquivos` },
   { id: "publications", label: "Publicações", icon: "send", kicker: "histórico", title: "Saídas publicadas", metric: state => `${state.publications.length} registros` },
   { id: "library", label: "Biblioteca", icon: "bookmark", kicker: "reaproveitamento", title: "Biblioteca criativa", metric: state => `${state.library.length} itens` },
-  { id: "assistant", label: "IA auxiliar", icon: "spark", kicker: "arquitetura", title: "Assistente auxiliar", metric: () => "desativada" }
+  { id: "assistant", label: "IA auxiliar", icon: "spark", kicker: "arquitetura", title: "Assistente auxiliar", metric: () => "ativa" }
 ];
 
 const libraryCategories = [
@@ -42,6 +43,7 @@ let calendarState = {
 };
 let isInstagramSyncing = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
+let assistantCaptionDraft = null;
 
 const shell = /** @type {HTMLElement} */ (document.querySelector("#app"));
 const nav = /** @type {HTMLElement} */ (document.querySelector("#sectionNav"));
@@ -127,6 +129,7 @@ function render() {
     ideas: renderIdeas,
     pieces: renderPieces,
     texts: renderTexts,
+    tags: renderTags,
     files: renderFiles,
     publications: renderPublications,
     library: renderLibrary,
@@ -346,8 +349,41 @@ function renderPublications(query) {
       <div class="item-topline"><span>${publication.platform}</span><strong>${publication.publishedAt || "sem data"}</strong></div>
       <h3>${findPieceTitle(publication.pieceId)}</h3>
       <p>${publication.url}</p>
+      <div class="mini-metrics">
+        ${renderMiniMetric("Views", publication.metrics?.views)}
+        ${renderMiniMetric("Likes", publication.metrics?.likes)}
+        ${renderMiniMetric("Salvos", publication.metrics?.saves)}
+        ${renderMiniMetric("Shares", publication.metrics?.shares)}
+        ${renderMiniMetric("Comentários", publication.metrics?.comments)}
+      </div>
     </article>
   `).join("")}</div>`;
+}
+
+function renderTags(query) {
+  const formatRows = buildFormatPerformanceRows(state).filter(row => matchesQuery([row.label], query));
+  const tagRows = buildTagPerformanceRows(state).filter(row => matchesQuery([row.label], query));
+
+  return `
+    <div class="stack">
+      <section class="panel">
+        <h3>Performance por formato</h3>
+        <p>Esses números somam as métricas das publicações vinculadas às peças do app.</p>
+        ${formatRows.length ? renderPerformanceTable(formatRows) : `<p>Nenhuma publicação vinculada com métricas ainda.</p>`}
+      </section>
+
+      <section class="panel">
+        <h3>Performance por tags e termos</h3>
+        <p>O app cruza tags das ideias, hashtags e termos SEO das legendas com as publicações vinculadas para mostrar o impacto de cada elemento.</p>
+        ${tagRows.length ? renderPerformanceTable(tagRows) : `<p>Cadastre tags nas ideias e publique conteúdos vinculados para começar a comparar os componentes.</p>`}
+      </section>
+
+      <section class="panel">
+        <h3>Próximo passo para componentes da biblioteca</h3>
+        <p>É possível medir ganchos, formatos e estruturas individualmente. Para isso, precisamos vincular cada peça aos componentes usados da biblioteca, em vez de deixar isso só no texto solto.</p>
+      </section>
+    </div>
+  `;
 }
 
 function renderDashboard(query) {
@@ -605,23 +641,107 @@ function renderLibrary(query) {
 }
 
 function renderAssistant() {
-  const enabled = assistantGateway.isEnabled(state);
+  const enabled = assistantGateway.isEnabled();
+  const overviewRange = getCurrentMonthRange();
+  const previousRange = getPreviousRange(overviewRange);
+  const insightsReport = assistantGateway.buildInsightsReport({
+    dashboard: instagramDashboard,
+    state,
+    range: overviewRange,
+    previousRange
+  });
+  const captionContext = assistantGateway.collectCaptionContext(state);
+
   return `
     <div class="assistant-page">
       <section class="panel">
         <h3>Status</h3>
-        <p>${enabled ? "Ativa" : "Desativada"}</p>
+        <p>${enabled ? "Ativa localmente" : "Desativada"}</p>
+        <small>Visão diária fixa de ${insightsReport.rangeLabel}.</small>
       </section>
       <section class="panel">
-        <h3>Pontos de entrada</h3>
-        <div class="stack mini">
-          ${state.ai.plannedHooks.map(hook => `<span class="hook">${hook}</span>`).join("")}
+        <h3>Resumo de desempenho</h3>
+        <p>${insightsReport.summary}</p>
+      </section>
+      <section class="panel">
+        <h3>Melhor conteúdo do período</h3>
+        ${insightsReport.bestContent ? `
+          <p>${insightsReport.bestContent.item.caption || "Conteúdo sem legenda"}</p>
+          <small>Engajamento relativo: ${formatPercent(insightsReport.bestContent.score)} | ${formatNumber(insightsReport.bestContent.engagement)} pontos ponderados.</small>
+        ` : `<p>Nenhum conteúdo com métricas no período.</p>`}
+      </section>
+      <section class="panel">
+        <h3>Alerta de queda ou pico</h3>
+        <p>${insightsReport.alert}</p>
+      </section>
+      <section class="panel">
+        <h3>Sugestão de próximo conteúdo</h3>
+        <p>${insightsReport.nextSuggestion}</p>
+      </section>
+      <section class="panel assistant-composer">
+        <h3>Geração de legendas</h3>
+        <form id="assistantCaptionForm" class="stack mini">
+          ${renderDropdown({
+            name: "platform",
+            label: "Plataforma",
+            value: assistantCaptionDraft?.platform || "instagram",
+            options: [
+              { value: "instagram", label: "Instagram" },
+              { value: "tiktok", label: "TikTok" },
+              { value: "shorts", label: "YouTube Shorts" }
+            ]
+          })}
+          ${renderDropdown({
+            name: "pieceId",
+            label: "Vídeo vinculado",
+            value: assistantCaptionDraft?.pieceId || "__none",
+            options: [
+              { value: "__none", label: "Sem vídeo vinculado" },
+              ...state.pieces.map(piece => ({ value: piece.id, label: piece.title }))
+            ]
+          })}
+          <input name="title" placeholder="Título do vídeo" value="${escapeHtml(assistantCaptionDraft?.title || "")}" required />
+          <textarea name="theme" placeholder="Tema do vídeo" required>${escapeHtml(assistantCaptionDraft?.theme || "")}</textarea>
+          <button class="primary-action" type="submit">Gerar legenda</button>
+        </form>
+
+        <div class="assistant-context">
+          <small>Hashtags mais usadas: ${captionContext.hashtags.map(item => item.label).join(" ") || "nenhuma ainda"}</small>
+          <small>Termos SEO mais usados: ${captionContext.seoTerms.map(item => item.label).join(", ") || "nenhum ainda"}</small>
         </div>
+
+        ${assistantCaptionDraft ? `
+          <div class="stack mini">
+            <textarea id="assistantCaptionOutput">${escapeHtml(assistantCaptionDraft.body)}</textarea>
+            <small>SEO sugerido: ${assistantCaptionDraft.seoTerms.join(", ") || "sem termos sugeridos"}</small>
+            <small>Hashtags sugeridas: ${assistantCaptionDraft.hashtags.join(" ") || "sem hashtags sugeridas"}</small>
+            <div class="dashboard-actions">
+              <button class="primary-action" type="button" data-accept-caption>Salvar legenda</button>
+              <button class="ghost-action" type="button" data-ignore-caption>Ignorar</button>
+            </div>
+          </div>
+        ` : ""}
       </section>
-      <section class="panel">
-        <h3>Princípio</h3>
-        <p>A IA sugere, revisa e organiza. O controle editorial continua nas seções do ContentOS.</p>
-      </section>
+    </div>
+  `;
+}
+
+function renderPerformanceTable(rows) {
+  return `
+    <div class="table-surface performance-table">
+      <div class="table-row table-head">
+        <span>Componente</span><span>Publicações</span><span>Views</span><span>Likes</span><span>Salvos</span><span>Shares</span>
+      </div>
+      ${rows.map(row => `
+        <article class="table-row">
+          <span><strong>${row.label}</strong><small>${row.source}</small></span>
+          <span>${formatNumber(row.count)}</span>
+          <span>${formatNumber(row.metrics.views)}</span>
+          <span>${formatNumber(row.metrics.likes)}</span>
+          <span>${formatNumber(row.metrics.saves)}</span>
+          <span>${formatNumber(row.metrics.shares)}</span>
+        </article>
+      `).join("")}
     </div>
   `;
 }
@@ -634,6 +754,7 @@ function attachSectionEvents() {
   attachDropdownEvents();
   attachLibraryEvents();
   attachDashboardEvents();
+  attachAssistantEvents();
 
   const ideaForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#ideaForm"));
   if (ideaForm) {
@@ -793,6 +914,64 @@ function attachLibraryEvents() {
   });
 }
 
+function attachAssistantEvents() {
+  const assistantCaptionForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#assistantCaptionForm"));
+  if (assistantCaptionForm) {
+    assistantCaptionForm.addEventListener("submit", event => {
+      event.preventDefault();
+      const formData = new FormData(assistantCaptionForm);
+      const platform = String(formData.get("platform") || "instagram");
+      const pieceId = normalizePieceId(formData.get("pieceId"));
+      const title = String(formData.get("title") || "").trim();
+      const theme = String(formData.get("theme") || "").trim();
+      const context = assistantGateway.collectCaptionContext(state);
+      const pieceTitle = pieceId ? findPieceTitle(pieceId) : "";
+      assistantCaptionDraft = {
+        ...assistantGateway.improveCaption({
+          title,
+          theme,
+          platform,
+          pieceTitle,
+          rules: platformRules[platform],
+          context
+        }),
+        pieceId: pieceId || "__none",
+        theme
+      };
+      render();
+    });
+  }
+
+  const acceptButton = document.querySelector("[data-accept-caption]");
+  if (acceptButton) {
+    acceptButton.addEventListener("click", async () => {
+      if (!assistantCaptionDraft) return;
+      const output = /** @type {HTMLTextAreaElement | null} */ (document.querySelector("#assistantCaptionOutput"));
+      state.texts.unshift({
+        id: createId("text"),
+        pieceId: normalizePieceId(assistantCaptionDraft.pieceId),
+        platform: assistantCaptionDraft.platform,
+        title: assistantCaptionDraft.title,
+        body: output?.value || assistantCaptionDraft.body,
+        seoTerms: assistantCaptionDraft.seoTerms,
+        hashtags: assistantCaptionDraft.hashtags
+      });
+      assistantCaptionDraft = null;
+      currentSection = "texts";
+      window.location.hash = "texts";
+      await persistAndRender();
+    });
+  }
+
+  const ignoreButton = document.querySelector("[data-ignore-caption]");
+  if (ignoreButton) {
+    ignoreButton.addEventListener("click", () => {
+      assistantCaptionDraft = null;
+      render();
+    });
+  }
+}
+
 function attachDropdownEvents() {
   document.querySelectorAll("[data-dropdown]").forEach(dropdown => {
     const dropdownElement = /** @type {HTMLElement} */ (dropdown);
@@ -866,6 +1045,92 @@ function normalizePieceId(value) {
 
 function countLinkedTexts(pieceId) {
   return state.texts.filter(text => text.pieceId === pieceId).length;
+}
+
+function buildFormatPerformanceRows(currentState) {
+  const piecesById = new Map(currentState.pieces.map(piece => [piece.id, piece]));
+  const grouped = new Map();
+
+  for (const publication of currentState.publications) {
+    const piece = piecesById.get(publication.pieceId);
+    const label = piece?.format || "sem formato definido";
+    upsertPerformanceRow(grouped, label, "formato", publication.metrics);
+  }
+
+  return [...grouped.values()].sort((left, right) => right.metrics.views - left.metrics.views);
+}
+
+function buildTagPerformanceRows(currentState) {
+  const ideasById = new Map(currentState.ideas.map(idea => [idea.id, idea]));
+  const textsByPieceId = new Map();
+  const grouped = new Map();
+
+  for (const text of currentState.texts) {
+    if (!text.pieceId) continue;
+    textsByPieceId.set(text.pieceId, [...(textsByPieceId.get(text.pieceId) || []), text]);
+  }
+
+  for (const publication of currentState.publications) {
+    const piece = currentState.pieces.find(item => item.id === publication.pieceId);
+    const idea = piece?.ideaId ? ideasById.get(piece.ideaId) : null;
+    const texts = textsByPieceId.get(piece?.id) || [];
+    const tokens = new Map();
+
+    for (const tag of idea?.tags || []) tokens.set(normalizeToken(tag), { label: tag, source: "tag da ideia" });
+    for (const text of texts) {
+      for (const hashtag of text.hashtags || []) tokens.set(normalizeToken(hashtag), { label: hashtag.replace(/^#/, ""), source: "hashtag" });
+      for (const seoTerm of text.seoTerms || []) tokens.set(normalizeToken(seoTerm), { label: seoTerm, source: "SEO" });
+    }
+
+    for (const token of tokens.values()) {
+      if (!token.label) continue;
+      upsertPerformanceRow(grouped, token.label, token.source, publication.metrics);
+    }
+  }
+
+  return [...grouped.values()].sort((left, right) => right.metrics.views - left.metrics.views);
+}
+
+function upsertPerformanceRow(grouped, label, source, metrics = {}) {
+  const key = normalizeToken(label);
+  if (!key) return;
+  const existing = grouped.get(key) || {
+    label,
+    source,
+    count: 0,
+    metrics: {
+      views: 0,
+      likes: 0,
+      saves: 0,
+      shares: 0,
+      comments: 0
+    }
+  };
+
+  existing.count += 1;
+  existing.metrics.views += Number(metrics.views || 0);
+  existing.metrics.likes += Number(metrics.likes || 0);
+  existing.metrics.saves += Number(metrics.saves || 0);
+  existing.metrics.shares += Number(metrics.shares || 0);
+  existing.metrics.comments += Number(metrics.comments || 0);
+  grouped.set(key, existing);
+}
+
+function getCurrentMonthRange() {
+  const today = endOfDay(new Date());
+  const start = new Date(today.getFullYear(), today.getMonth(), 1);
+  return { start, end: today };
+}
+
+function getPreviousRange(range) {
+  const duration = range.end.getTime() - range.start.getTime();
+  const previousEnd = new Date(range.start.getTime() - 1);
+  const previousStart = new Date(previousEnd.getTime() - duration);
+  return { start: previousStart, end: previousEnd };
+}
+
+function normalizeToken(value) {
+  return String(value || "").replace(/^#/, "").trim().toLowerCase();
 }
 
 function dashboardMetric() {
@@ -1016,6 +1281,10 @@ function formatInstagramContentType(type) {
 
 function formatNumber(value) {
   return new Intl.NumberFormat("pt-BR").format(Number(value || 0));
+}
+
+function formatPercent(value) {
+  return `${(Number(value || 0) * 100).toFixed(1).replace(".", ",")}%`;
 }
 
 function formatDateTime(value) {

@@ -16,7 +16,7 @@ O ContentOS nasce como um sistema de seções, não como kanban.
 
 - Instagram: até 5 hashtags.
 - TikTok: hashtags livres.
-- YouTube Shorts: até 150 caracteres.
+- YouTube Shorts: até 100 caracteres.
 
 ## Princípio da IA
 

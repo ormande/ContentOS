@@ -649,6 +649,19 @@ mark {
   gap: 16px;
 }
 
+.assistant-composer {
+  grid-column: 1 / -1;
+}
+
+.assistant-context {
+  display: grid;
+  gap: 6px;
+}
+
+.assistant-composer textarea {
+  min-height: 140px;
+}
+
 .dashboard-page {
   display: grid;
   gap: 16px;
@@ -915,6 +928,10 @@ mark {
   display: block;
   color: var(--accent-strong);
   font-size: 18px;
+}
+
+.performance-table .table-row {
+  grid-template-columns: minmax(180px, 2fr) repeat(5, minmax(70px, 1fr));
 }
 
 .empty-state.compact {

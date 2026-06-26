@@ -8,13 +8,13 @@ const emptyState = {
   publications: [],
   library: [],
   ai: {
-    enabled: false,
-    provider: null,
+    enabled: true,
+    provider: "local",
     plannedHooks: [
-      "sugerir próximos passos do vídeo",
-      "revisar SEO e hashtags",
-      "adaptar legenda por plataforma",
-      "encontrar vídeos incompletos"
+      "resumir o desempenho do mês até hoje",
+      "apontar o melhor conteúdo do período",
+      "sinalizar quedas e picos relevantes",
+      "gerar legendas com SEO e hashtags do histórico"
     ]
   }
 };
@@ -35,8 +35,8 @@ export const platformRules = {
   shorts: {
     label: "YouTube Shorts",
     hashtagLimit: 3,
-    characterLimit: 150,
-    note: "até 150 caracteres"
+    characterLimit: 100,
+    note: "até 100 caracteres"
   }
 };
 
