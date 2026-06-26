@@ -1,5 +1,7 @@
 import { isSupabaseConfigured, requireSupabase } from "./supabaseClient.js";
 
+const LOCAL_STATE_KEY = "contentos-local-state-v1";
+
 const emptyState = {
   ideas: [],
   pieces: [],
@@ -59,68 +61,86 @@ export function createEmptyState() {
 }
 
 export async function loadState() {
+  const localState = loadLocalState();
+
   if (!isSupabaseConfigured) {
     console.warn("Supabase não configurado. Usando estado vazio temporário.");
-    return createEmptyState();
+    return localState || createEmptyState();
   }
 
   const client = requireSupabase();
-  const [
-    ideas,
-    pieces,
-    scripts,
-    pieceComponents,
-    texts,
-    files,
-    publications,
-    library,
-    aiSettings
-  ] = await Promise.all([
-    selectAll(client, "ideas", "created_at", { ascending: false }),
-    selectAll(client, "pieces", "updated_at", { ascending: false }),
-    selectAll(client, "scripts", "updated_at", { ascending: false }),
-    selectAll(client, "piece_components", "order_index", { ascending: true }),
-    selectAll(client, "texts", "updated_at", { ascending: false }),
-    selectAll(client, "files", "updated_at", { ascending: false }),
-    selectAll(client, "publications", "published_at", { ascending: false }),
-    selectAll(client, "library", "created_at", { ascending: false }),
-    client.from("ai_settings").select("*").eq("id", 1).maybeSingle()
-  ]);
+  try {
+    const [
+      ideas,
+      pieces,
+      scripts,
+      pieceComponents,
+      texts,
+      files,
+      publications,
+      library,
+      aiSettings
+    ] = await Promise.all([
+      selectAll(client, "ideas", "created_at", { ascending: false }),
+      selectAllSafe(client, "pieces", "updated_at", { ascending: false }, []),
+      selectAllSafe(client, "scripts", "updated_at", { ascending: false }, []),
+      selectAllSafe(client, "piece_components", "order_index", { ascending: true }, []),
+      selectAll(client, "texts", "updated_at", { ascending: false }),
+      selectAll(client, "files", "updated_at", { ascending: false }),
+      selectAll(client, "publications", "published_at", { ascending: false }),
+      selectAll(client, "library", "created_at", { ascending: false }),
+      selectAiSettingsSafe(client)
+    ]);
 
-  if (aiSettings.error) throw aiSettings.error;
+    const remoteState = reconcileStateLinks({
+      ideas: ideas.map(fromIdeaRow),
+      pieces: pieces.map(fromPieceRow),
+      scripts: scripts.map(fromScriptRow),
+      pieceComponents: pieceComponents.map(fromPieceComponentRow),
+      texts: texts.map(fromTextRow),
+      files: files.map(fromFileRow),
+      publications: publications.map(fromPublicationRow),
+      library: library.map(fromLibraryRow),
+      ai: fromAiRow(aiSettings?.data)
+    });
 
-  return reconcileStateLinks({
-    ideas: ideas.map(fromIdeaRow),
-    pieces: pieces.map(fromPieceRow),
-    scripts: scripts.map(fromScriptRow),
-    pieceComponents: pieceComponents.map(fromPieceComponentRow),
-    texts: texts.map(fromTextRow),
-    files: files.map(fromFileRow),
-    publications: publications.map(fromPublicationRow),
-    library: library.map(fromLibraryRow),
-    ai: fromAiRow(aiSettings.data)
-  });
+    if (localState && shouldPreferLocalState(localState, remoteState)) {
+      return reconcileStateLinks(localState);
+    }
+
+    return remoteState;
+  } catch (error) {
+    console.warn("Falha ao carregar do Supabase. Usando cache local.", error);
+    return localState || createEmptyState();
+  }
 }
 
 export async function saveState(state) {
+  const nextState = reconcileStateLinks(state);
+  saveLocalState(nextState);
+
   if (!isSupabaseConfigured) {
     console.warn("Supabase não configurado. Alterações mantidas apenas em memória.");
     return;
   }
 
   const client = requireSupabase();
-  const nextState = reconcileStateLinks(state);
+  const syncErrors = [];
 
-  await syncRows(client, "ideas", nextState.ideas.map(toIdeaRow));
-  await syncRows(client, "pieces", nextState.pieces.map(toPieceRow));
-  await syncRows(client, "scripts", nextState.scripts.map(toScriptRow));
-  await syncRows(client, "piece_components", nextState.pieceComponents.map(toPieceComponentRow));
-  await syncRows(client, "texts", nextState.texts.map(toTextRow));
-  await syncRows(client, "files", nextState.files.map(toFileRow));
-  await syncRows(client, "publications", nextState.publications.map(toPublicationRow));
-  await upsertRows(client, "library", nextState.library.map(toLibraryRow).filter(Boolean), "category,name");
-  await upsertRows(client, "ai_settings", [toAiRow(nextState.ai)]);
-  await syncInstagramMediaLinks(client, nextState.pieces);
+  await tryRemoteSync(() => syncRows(client, "ideas", nextState.ideas.map(toIdeaRow)), "ideas", syncErrors);
+  await tryRemoteSync(() => syncRows(client, "pieces", nextState.pieces.map(toPieceRow)), "pieces", syncErrors);
+  await tryRemoteSync(() => syncRows(client, "scripts", nextState.scripts.map(toScriptRow)), "scripts", syncErrors);
+  await tryRemoteSync(() => syncRows(client, "piece_components", nextState.pieceComponents.map(toPieceComponentRow)), "piece_components", syncErrors);
+  await tryRemoteSync(() => syncRows(client, "texts", nextState.texts.map(toTextRow)), "texts", syncErrors);
+  await tryRemoteSync(() => syncRows(client, "files", nextState.files.map(toFileRow)), "files", syncErrors);
+  await tryRemoteSync(() => syncRows(client, "publications", nextState.publications.map(toPublicationRow)), "publications", syncErrors);
+  await tryRemoteSync(() => upsertRows(client, "library", nextState.library.map(toLibraryRow).filter(Boolean), "category,name"), "library", syncErrors);
+  await tryRemoteSync(() => upsertRows(client, "ai_settings", [toAiRow(nextState.ai)]), "ai_settings", syncErrors);
+  await tryRemoteSync(() => syncInstagramMediaLinks(client, nextState.pieces), "instagram_media", syncErrors);
+
+  if (syncErrors.length) {
+    throw new Error(`Parte do salvamento remoto falhou: ${syncErrors.join(", ")}. Os dados ficaram no cache local deste navegador.`);
+  }
 }
 
 export function createId(prefix) {
@@ -133,6 +153,24 @@ async function selectAll(client, table, orderColumn, orderOptions) {
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
+}
+
+async function selectAllSafe(client, table, orderColumn, orderOptions, fallback) {
+  try {
+    return await selectAll(client, table, orderColumn, orderOptions);
+  } catch (error) {
+    console.warn(`Tabela ${table} indisponível no Supabase.`, error);
+    return fallback;
+  }
+}
+
+async function selectAiSettingsSafe(client) {
+  try {
+    return await client.from("ai_settings").select("*").eq("id", 1).maybeSingle();
+  } catch (error) {
+    console.warn("Tabela ai_settings indisponível no Supabase.", error);
+    return { data: null, error: null };
+  }
 }
 
 async function syncRows(client, table, rows) {
@@ -167,6 +205,15 @@ async function upsertRows(client, table, rows, onConflict) {
   const options = onConflict ? { onConflict } : undefined;
   const { error } = await client.from(table).upsert(rows, options);
   if (error) throw error;
+}
+
+async function tryRemoteSync(run, label, errors) {
+  try {
+    await run();
+  } catch (error) {
+    console.warn(`Falha ao sincronizar ${label} no Supabase.`, error);
+    errors.push(label);
+  }
 }
 
 async function syncInstagramMediaLinks(client, pieces) {
@@ -592,4 +639,58 @@ function isUuid(value) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function loadLocalState() {
+  try {
+    const raw = globalThis.localStorage?.getItem(LOCAL_STATE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (error) {
+    console.warn("Não foi possível ler o cache local do ContentOS.", error);
+    return null;
+  }
+}
+
+function saveLocalState(state) {
+  try {
+    globalThis.localStorage?.setItem(LOCAL_STATE_KEY, JSON.stringify({
+      ...state,
+      __savedAt: new Date().toISOString()
+    }));
+  } catch (error) {
+    console.warn("Não foi possível salvar o cache local do ContentOS.", error);
+  }
+}
+
+function shouldPreferLocalState(localState, remoteState) {
+  if (!hasMeaningfulContent(remoteState) && hasMeaningfulContent(localState)) return true;
+
+  const localSavedAt = Date.parse(localState?.__savedAt || "") || 0;
+  const remoteSavedAt = Math.max(
+    ...[
+      ...remoteState.ideas.map(item => Date.parse(item.createdAt || "") || 0),
+      ...remoteState.pieces.map(item => Date.parse(item.updatedAt || "") || 0),
+      ...remoteState.scripts.map(item => Date.parse(item.updatedAt || "") || 0),
+      ...remoteState.texts.map(item => Date.parse(item.updatedAt || "") || 0),
+      ...remoteState.files.map(item => Date.parse(item.updatedAt || "") || 0),
+      ...remoteState.library.map(item => Date.parse(item.createdAt || "") || 0)
+    ],
+    0
+  );
+
+  return localSavedAt > remoteSavedAt;
+}
+
+function hasMeaningfulContent(state) {
+  return Boolean(
+    state?.ideas?.length
+    || state?.pieces?.length
+    || state?.scripts?.length
+    || state?.pieceComponents?.length
+    || state?.texts?.length
+    || state?.files?.length
+    || state?.publications?.length
+    || state?.library?.length
+  );
 }

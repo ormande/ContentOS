@@ -1,6 +1,3 @@
-const GEMINI_MODEL = "gemini-1.5-flash";
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent`;
-
 export async function handleAiGenerate(request, response, options = {}) {
   const body = options.body || await readJsonBody(request);
   const apiKey = options.apiKey || process.env.GEMINI_API_KEY;
@@ -26,7 +23,8 @@ export async function handleAiGenerate(request, response, options = {}) {
     return;
   }
 
-  const upstream = await fetch(`${GEMINI_ENDPOINT}?alt=sse&key=${encodeURIComponent(apiKey)}`, {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=${encodeURIComponent(apiKey)}`;
+  const upstream = await fetch(`${endpoint}&alt=sse`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -189,7 +187,7 @@ function buildPrompt(type, data) {
         '{"platforms":{"instagram":{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"]},"tiktok":{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"]},"shorts":{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"],"yt_title":"string","yt_description":"string","yt_tags":"tag1, tag2"}}}'
       ].join(" "),
       user: JSON.stringify({
-        task: "Gerar uma legenda para cada plataforma selecionada respeitando os limites de cada uma.",
+        task: "Gerar uma legenda por plataforma respeitando os limites de cada uma.",
         title: data.title,
         script: data.script,
         objective: data.objective,
