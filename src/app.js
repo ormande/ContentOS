@@ -4,12 +4,21 @@ import { loadInstagramDashboard, syncInstagramInsights } from "./data/instagramI
 import {
   createEmptyState,
   createId,
+  getTemplateDefaults,
   ideaStatuses,
   loadState,
   pieceComponentSlots,
   platformRules,
   saveState
 } from "./data/store.js";
+import {
+  formatScriptFieldValue,
+  getStructureFieldDefs,
+  getStructureLabel,
+  normalizeScriptFieldsForTemplate,
+  readScriptFieldsFromForm,
+  resolveTemplateKeyFromLibraryItem
+} from "./data/scriptStructures.js";
 import { openConfirm, openPrompt } from "./ui/modal.js";
 
 const sections = [
@@ -95,26 +104,7 @@ const objectiveOptions = [
   "educar para venda"
 ];
 
-const scriptTemplates = {
-  storytelling: [
-    { key: "oQueAconteceu", label: "O que aconteceu" },
-    { key: "onde", label: "Onde" },
-    { key: "quando", label: "Quando" },
-    { key: "quemEstava", label: "Quem estava" },
-    { key: "comoFoi", label: "Como foi" },
-    { key: "desfecho", label: "Qual desfecho" },
-    { key: "aprendizado", label: "O que aprendeu" }
-  ],
-  educacional: [
-    { key: "problema", label: "Problema" },
-    { key: "solucao", label: "Solução" },
-    { key: "prova", label: "Prova" },
-    { key: "cta", label: "CTA" }
-  ],
-  tutorial: [
-    { key: "steps", label: "Passos numerados", multiline: true }
-  ]
-};
+let hookTypeFilter = "all";
 
 let state = createEmptyState();
 let currentSection = sanitizeSection(window.location.hash.replace("#", "") || "dashboard");
@@ -168,6 +158,10 @@ async function init() {
 
   try {
     state = await loadState();
+    if (state.__librarySeeded) {
+      delete state.__librarySeeded;
+      await saveState(state);
+    }
     selectedPieceId ||= state.pieces[0]?.id || null;
   } catch (error) {
     console.error(error);
@@ -509,14 +503,18 @@ function renderBriefPhase(piece, idea) {
 
 function renderScriptPhase(piece, script, idea) {
   const currentScript = script || createLocalScript(piece.id);
-  const fields = scriptTemplates[currentScript.template] || scriptTemplates.storytelling;
   const structureComponent = getPrimaryComponent(piece.id, "script_structure");
-  const hookComponent = getPrimaryComponent(piece.id, "hook");
-  const formatComponent = getPrimaryComponent(piece.id, "format");
-  const structureItems = getLibraryOptionsForSlot("script_structure");
-  const hookItems = getLibraryOptionsForSlot("hook");
+  const structureItem = state.library.find(item => item.id === structureComponent?.libraryItemId);
+  const templateKey = structureItem
+    ? resolveTemplateKeyFromLibraryItem(structureItem)
+    : currentScript.template;
+  const fields = getStructureFieldDefs(templateKey);
+  const hookItems = filterHookLibraryItems(getLibraryOptionsForSlot("hook"));
   const formatItems = getLibraryOptionsForSlot("format");
   const ctaItems = getLibraryOptionsForSlot("cta");
+  const structureItems = getLibraryOptionsForSlot("script_structure");
+  const hookComponent = getPrimaryComponent(piece.id, "hook");
+  const formatComponent = getPrimaryComponent(piece.id, "format");
   const selectedCtas = getPieceComponents(piece.id, "cta").map(component => component.libraryItemId).filter(Boolean);
   const canImproveScript = hasScriptContent(currentScript);
   const scriptAiState = aiDrafts.script;
@@ -529,7 +527,7 @@ function renderScriptPhase(piece, script, idea) {
           <h3>Roteiro</h3>
         </div>
         <div class="phase-form-body stack">
-          ${renderFieldGroup("Estrutura", "Define o modelo narrativo do roteiro.", `
+          ${renderFieldGroup("Estrutura", "Define o modelo narrativo do roteiro. As estruturas são fixas neste piloto.", `
             ${renderLibrarySingleSelect({
               label: "Estrutura de roteiro",
               fieldName: "structureItemId",
@@ -537,13 +535,21 @@ function renderScriptPhase(piece, script, idea) {
               value: structureComponent?.libraryItemId || "",
               options: structureItems,
               placeholder: "Selecione a estrutura",
-              addLabel: "+ Adicionar nova estrutura",
               dataset: `data-script-structure-select="${piece.id}"`,
-              required: true
+              required: true,
+              allowQuickAdd: false
             })}
           `)}
-          ${renderFieldGroup("Conteúdo", "Preencha cada bloco do roteiro conforme a estrutura escolhida.", fields.map(field => renderScriptField(currentScript, field)).join(""))}
+          ${renderFieldGroup("Conteúdo", `Preencha cada bloco conforme ${escapeHtml(getStructureLabel(templateKey))}.`, fields.map(field => renderScriptField(currentScript, field)).join(""))}
           ${renderFieldGroup("Gancho e formato", "Componentes criativos que definem como o vídeo começa e se apresenta.", `
+            <div class="stack mini">
+              <span class="field-label">Tipo de gancho</span>
+              <div class="segmented-control" data-hook-type-filter="${piece.id}" aria-label="Filtrar ganchos">
+                <button type="button" class="${hookTypeFilter === "all" ? "active" : ""}" data-hook-filter="all">Todos</button>
+                <button type="button" class="${hookTypeFilter === "visual" ? "active" : ""}" data-hook-filter="visual">Visual</button>
+                <button type="button" class="${hookTypeFilter === "textual" ? "active" : ""}" data-hook-filter="textual">Textual</button>
+              </div>
+            </div>
             ${renderLibrarySingleSelect({
               label: "Gancho",
               fieldName: "hookItemId",
@@ -575,6 +581,27 @@ function renderScriptPhase(piece, script, idea) {
               `).join("") : `<p class="field-hint">Nenhum CTA cadastrado na biblioteca.</p>`}
             </div>
             <button class="ghost-action compact align-start" type="button" data-quick-add-library="cta">+ Adicionar novo CTA</button>
+          `)}
+          ${renderFieldGroup("Geração com IA", "Tom e formato de cenas são usados apenas ao clicar em Gerar ou Melhorar.", `
+            ${renderField("Tom do roteiro", renderCustomSelect({
+              name: "scriptAiTone",
+              value: "normal",
+              placeholder: "Selecione o tom",
+              options: [
+                { value: "serio", label: "Sério" },
+                { value: "normal", label: "Normal" },
+                { value: "humor", label: "Bem-humorado" }
+              ]
+            }))}
+            ${renderField("Formato de cenas", renderCustomSelect({
+              name: "scriptAiSceneFormat",
+              value: "numeradas",
+              placeholder: "Selecione o formato",
+              options: [
+                { value: "numeradas", label: "Cenas numeradas" },
+                { value: "continuo", label: "Fluxo contínuo" }
+              ]
+            }))}
           `)}
           <div class="inline-actions">
             <button class="ghost-action compact" type="button" data-script-generate="${piece.id}" ${isGeneratingScript ? "disabled" : ""}>${isGeneratingScript ? "Gerando..." : "Gerar pela IA"}</button>
@@ -1021,6 +1048,12 @@ function renderLibrary(query) {
       </aside>
 
       <div class="stack library-content">
+        ${currentLibraryCategory === "estrutura_roteiro" ? `
+          <section class="panel">
+            <h3>Estruturas fixas do piloto</h3>
+            <p>As estruturas de roteiro são pré-definidas. Escolha uma delas no Montador; não é possível criar novas nesta fase.</p>
+          </section>
+        ` : `
         <form class="panel stack" id="libraryForm">
           <h3>${editingLibraryItem ? "Editar item da biblioteca" : "Novo item da biblioteca"}</h3>
           <input type="hidden" name="libraryItemId" value="${escapeHtml(editingLibraryItem?.id || "")}" />
@@ -1035,6 +1068,7 @@ function renderLibrary(query) {
             ${editingLibraryItem ? `<button class="ghost-action compact" type="button" id="cancelLibraryEdit">Cancelar</button>` : ""}
           </div>
         </form>
+        `}
 
         <section class="panel">
           <h3>${escapeHtml(getCategoryLabel(currentLibraryCategory))}</h3>
@@ -1049,6 +1083,8 @@ function renderLibrary(query) {
             </div>
             <h3>${escapeHtml(item.name)}</h3>
             <p>${escapeHtml(item.notes || "Sem notas ainda.")}</p>
+            ${item.category === "gancho" ? `<small>Tipo: ${item.metadata?.hookType === "textual" ? "Textual" : "Visual"}</small>` : ""}
+            ${item.category === "estrutura_roteiro" && item.metadata?.templateKey ? `<small>Template: ${escapeHtml(getStructureLabel(item.metadata.templateKey))}</small>` : ""}
             ${item.example ? `<small>${escapeHtml(item.example)}</small>` : ""}
             <div class="tag-row">${item.context.map(context => `<span>${escapeHtml(context)}</span>`).join("")}</div>
             <div class="inline-actions">
@@ -1606,7 +1642,7 @@ function attachPieceEvents() {
       const structureItemId = String(formData.get("structureItemId") || "").trim();
       const hookItemId = String(formData.get("hookItemId") || "").trim();
       const formatItemId = String(formData.get("formatItemId") || "").trim();
-      const template = inferTemplateFromStructureId(structureItemId);
+      const template = resolveTemplateKeyFromStructureId(structureItemId);
       upsertScriptFromForm(pieceId, template, currentForm);
       syncSingleLibraryComponent(pieceId, "script_structure", structureItemId, { required: true, used: true });
       syncSingleLibraryComponent(pieceId, "hook", hookItemId, { required: true, used: true });
@@ -1628,7 +1664,7 @@ function attachPieceEvents() {
         upsertScriptFromForm(pieceId, previousTemplate, form);
       }
       const structureItemId = structureInput.value;
-      const template = inferTemplateFromStructureId(structureItemId);
+      const template = resolveTemplateKeyFromStructureId(structureItemId);
       if (template !== previousTemplate) {
         script.template = template;
         script.fields = getTemplateDefaults(template);
@@ -1791,6 +1827,16 @@ function attachPieceEvents() {
     });
   });
 
+  document.querySelectorAll("[data-hook-type-filter]").forEach(control => {
+    control.querySelectorAll("[data-hook-filter]").forEach(buttonElement => {
+      const button = /** @type {HTMLButtonElement} */ (buttonElement);
+      button.addEventListener("click", () => {
+        hookTypeFilter = button.dataset.hookFilter || "all";
+        render();
+      });
+    });
+  });
+
   document.querySelectorAll("[data-quick-add-library]").forEach(button => {
     const addButton = /** @type {HTMLButtonElement} */ (button);
     addButton.addEventListener("click", async () => {
@@ -1872,18 +1918,24 @@ function attachLibraryEvents() {
     event.preventDefault();
     const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
     const formData = new FormData(currentForm);
+    const category = String(formData.get("category") || currentLibraryCategory);
     const existing = state.library.find(item => item.id === String(formData.get("libraryItemId") || "").trim());
+    if (category === "estrutura_roteiro" && !existing) {
+      return;
+    }
     const nextItem = existing || {
       id: createUuid(),
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      metadata: {}
     };
     Object.assign(nextItem, {
       name: String(formData.get("name") || "").trim(),
-      category: String(formData.get("category") || currentLibraryCategory),
+      category,
       notes: String(formData.get("notes") || "").trim(),
       example: String(formData.get("example") || "").trim(),
       context: splitCommaList(formData.get("context")),
-      platforms: getCheckedValues(currentForm, "platforms")
+      platforms: getCheckedValues(currentForm, "platforms"),
+      metadata: existing?.metadata || nextItem.metadata || {}
     });
     if (!existing) {
       state.library.unshift(nextItem);
@@ -2191,6 +2243,11 @@ async function generateScriptWithAi(pieceId, mode) {
   if (!piece) return;
   const idea = state.ideas.find(item => item.id === piece.ideaId) || null;
   const script = getOrCreateScript(piece.id);
+  const scriptForm = /** @type {HTMLFormElement | null} */ (
+    document.querySelector(`form[data-piece-form="script"][data-piece-id="${pieceId}"]`)
+  );
+  const aiOptions = readScriptAiOptions(scriptForm);
+  const structure = buildScriptStructurePayload(script.template);
 
   aiDrafts.script = {
     pieceId,
@@ -2202,11 +2259,17 @@ async function generateScriptWithAi(pieceId, mode) {
   render();
 
   const type = mode === "improve" ? "improve" : "script";
+  const libraryPayload = {
+    hooks: buildLibraryAiOptions("hook"),
+    formats: buildLibraryAiOptions("format"),
+    ctas: buildLibraryAiOptions("cta")
+  };
   const data = mode === "improve"
     ? {
       type: "script",
       content: {
         template: script.template,
+        structure,
         fields: script.fields,
         script_text: getScriptSummary(piece.id)
       },
@@ -2215,24 +2278,21 @@ async function generateScriptWithAi(pieceId, mode) {
         objective: piece.brief.objective,
         platform: piece.platforms,
         idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null,
-        library: {
-          hooks: buildLibraryAiOptions("hook"),
-          formats: buildLibraryAiOptions("format"),
-          ctas: buildLibraryAiOptions("cta")
-        }
+        tone: aiOptions.tone,
+        scene_format: aiOptions.sceneFormat,
+        library: libraryPayload
       }
     }
     : {
       template: script.template,
+      structure,
       fields: script.fields,
       title: piece.title,
       objective: piece.brief.objective,
       idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null,
-      library: {
-        hooks: buildLibraryAiOptions("hook"),
-        formats: buildLibraryAiOptions("format"),
-        ctas: buildLibraryAiOptions("cta")
-      }
+      tone: aiOptions.tone,
+      scene_format: aiOptions.sceneFormat,
+      library: libraryPayload
     };
 
   try {
@@ -2411,21 +2471,37 @@ function parseAiJson(text) {
 }
 
 function normalizeAiScriptFields(template, fields) {
-  if (template === "tutorial") {
-    const steps = Array.isArray(fields.steps)
-      ? fields.steps
-      : String(fields.steps || "")
-        .split("\n")
-        .map(item => item.trim())
-        .filter(Boolean);
-    return { steps };
-  }
+  return normalizeScriptFieldsForTemplate(template, fields);
+}
 
-  const nextFields = {};
-  for (const field of scriptTemplates[template] || []) {
-    nextFields[field.key] = String(fields[field.key] || "").trim();
-  }
-  return nextFields;
+function readScriptAiOptions(form) {
+  const formData = form ? new FormData(form) : new FormData();
+  return {
+    tone: String(formData.get("scriptAiTone") || "normal"),
+    sceneFormat: String(formData.get("scriptAiSceneFormat") || "numeradas")
+  };
+}
+
+function buildScriptStructurePayload(templateKey) {
+  return {
+    key: templateKey,
+    label: getStructureLabel(templateKey),
+    fields: getStructureFieldDefs(templateKey).map(field => ({
+      key: field.key,
+      label: field.label,
+      hint: field.hint || ""
+    }))
+  };
+}
+
+function filterHookLibraryItems(items) {
+  if (hookTypeFilter === "all") return items;
+  return items.filter(item => (item.metadata?.hookType || "visual") === hookTypeFilter);
+}
+
+function resolveTemplateKeyFromStructureId(structureItemId) {
+  const structure = state.library.find(item => item.id === structureItemId);
+  return resolveTemplateKeyFromLibraryItem(structure);
 }
 
 function normalizeHashtags(hashtags) {
@@ -2546,6 +2622,7 @@ function buildLibraryAiOptions(slot) {
       name: item.name,
       notes: item.notes || "",
       example: item.example || "",
+      hookType: item.metadata?.hookType || null,
       metrics: getLibraryItemMetrics(item.id, slot)
     }))
     .sort((left, right) => scoreLibraryMetrics(right.metrics) - scoreLibraryMetrics(left.metrics));
@@ -2850,35 +2927,21 @@ function buildPiecePhaseStatus(piece) {
 }
 
 function hasScriptContent(script) {
-  if (script.template === "tutorial") return Boolean((script.fields.steps || []).length);
-  return Object.values(script.fields || {}).some(value => String(value || "").trim());
+  return Object.values(script.fields || {}).some(value => {
+    if (Array.isArray(value)) return value.length > 0;
+    return String(value || "").trim();
+  });
 }
 
 function readScriptFields(template, form) {
-  if (template === "tutorial") {
-    return {
-      steps: String(new FormData(form).get("steps") || "")
-        .split("\n")
-        .map(item => item.trim())
-        .filter(Boolean)
-    };
-  }
-
-  const fields = {};
-  for (const field of scriptTemplates[template] || []) {
-    fields[field.key] = String(new FormData(form).get(field.key) || "").trim();
-  }
-  return fields;
+  return readScriptFieldsFromForm(template, form);
 }
 
 function renderScriptField(script, field) {
-  const value = field.multiline
-    ? escapeHtml((script.fields?.[field.key] || []).join("\n"))
-    : escapeHtml(script.fields?.[field.key] || "");
-  const input = field.multiline
-    ? `<textarea name="${field.key}">${value}</textarea>`
-    : `<textarea name="${field.key}">${value}</textarea>`;
-  return renderField(field.label, input);
+  const value = escapeHtml(formatScriptFieldValue(field, script.fields?.[field.key]));
+  const rows = field.multiline || field.list ? 4 : 2;
+  const input = `<textarea name="${field.key}" rows="${rows}">${value}</textarea>`;
+  return renderField(field.label, input, { hint: field.hint || "" });
 }
 
 function renderField(label, inputHtml, { hint = "", inlineHint = false, required = false, className = "" } = {}) {
@@ -3016,7 +3079,7 @@ function renderFieldGroup(title, description, content) {
   `;
 }
 
-function renderLibrarySingleSelect({ label, fieldName, category, value, options, placeholder, addLabel, dataset = "", hint = "", required = false }) {
+function renderLibrarySingleSelect({ label, fieldName, category, value, options, placeholder, addLabel = "", dataset = "", hint = "", required = false, allowQuickAdd = true }) {
   const selectHtml = `
     ${renderCustomSelect({
       name: fieldName,
@@ -3025,7 +3088,7 @@ function renderLibrarySingleSelect({ label, fieldName, category, value, options,
       options: options.map(option => ({ value: option.id, label: option.name })),
       dataset
     })}
-    <button class="ghost-action compact align-start" type="button" data-quick-add-library="${category}">${escapeHtml(addLabel)}</button>
+    ${allowQuickAdd && addLabel ? `<button class="ghost-action compact align-start" type="button" data-quick-add-library="${category}">${escapeHtml(addLabel)}</button>` : ""}
   `;
   return renderField(label, selectHtml, { hint, required });
 }
@@ -3107,42 +3170,28 @@ function closeAllCustomSelects() {
   });
 }
 
-function getTemplateDefaults(template) {
-  if (template === "educacional") {
-    return { problema: "", solucao: "", prova: "", cta: "" };
-  }
-  if (template === "tutorial") {
-    return { steps: [] };
-  }
-  return {
-    oQueAconteceu: "",
-    onde: "",
-    quando: "",
-    quemEstava: "",
-    comoFoi: "",
-    desfecho: "",
-    aprendizado: ""
-  };
-}
-
-function inferTemplateFromStructureId(structureItemId) {
-  const structure = state.library.find(item => item.id === structureItemId);
-  const token = normalizeToken(`${structure?.name || ""} ${structure?.notes || ""}`);
-  if (token.includes("tutorial")) return "tutorial";
-  if (token.includes("educa")) return "educacional";
-  return "storytelling";
-}
-
 async function quickAddLibraryItem(category) {
+  if (category === "estrutura_roteiro") {
+    return null;
+  }
+
   const categoryLabel = getCategoryLabel(category);
   const name = await openPrompt({
     title: `Novo ${categoryLabel}`,
-    message: "Informe o nome do item para adicionar à biblioteca.",
+    message: category === "gancho"
+      ? `Informe o nome do gancho ${hookTypeFilter === "textual" ? "textual" : hookTypeFilter === "visual" ? "visual" : ""}.`.trim()
+      : "Informe o nome do item para adicionar à biblioteca.",
     label: "Nome",
     placeholder: `Ex.: ${categoryLabel}`,
     confirmLabel: "Adicionar"
   });
   if (!name?.trim()) return null;
+
+  const metadata = {};
+  if (category === "gancho") {
+    metadata.hookType = hookTypeFilter === "textual" ? "textual" : "visual";
+  }
+
   const item = {
     id: createUuid(),
     name: name.trim(),
@@ -3151,6 +3200,7 @@ async function quickAddLibraryItem(category) {
     platforms: ["instagram", "tiktok", "shorts"],
     notes: "",
     example: "",
+    metadata,
     createdAt: new Date().toISOString()
   };
   state.library.unshift(item);
@@ -3308,10 +3358,11 @@ function getPieceTheme(piece) {
 function getScriptSummary(pieceId) {
   const script = getScriptByPiece(pieceId);
   if (!script) return "";
-  if (script.template === "tutorial") {
-    return (script.fields.steps || []).join(" ");
-  }
-  return Object.values(script.fields || {}).filter(Boolean).join(" ");
+  return Object.values(script.fields || {})
+    .flatMap(value => (Array.isArray(value) ? value : [value]))
+    .map(item => String(item || "").trim())
+    .filter(Boolean)
+    .join(" ");
 }
 
 function renderPlatformCheckbox(name, selectedPlatforms) {

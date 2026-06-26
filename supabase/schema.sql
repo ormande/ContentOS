@@ -169,9 +169,12 @@ create table if not exists public.library (
   platforms public.content_platform[] not null default '{}',
   notes text,
   example text,
+  metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   unique (category, name)
 );
+
+alter table public.library add column if not exists metadata jsonb not null default '{}'::jsonb;
 
 create table if not exists public.piece_components (
   id text primary key,

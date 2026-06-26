@@ -1,4 +1,6 @@
 import { isSupabaseConfigured, requireSupabase } from "./supabaseClient.js";
+import { applyLibrarySeedIfEmpty } from "./librarySeed.js";
+import { getTemplateDefaults, normalizeScriptFieldsForTemplate } from "./scriptStructures.js";
 
 const LOCAL_STATE_KEY = "contentos-local-state-v1";
 
@@ -67,7 +69,7 @@ export async function loadState() {
 
   if (!isSupabaseConfigured) {
     console.warn("Supabase não configurado. Usando estado vazio temporário.");
-    return localState || createEmptyState();
+    return finalizeLoadedState(localState || createEmptyState());
   }
 
   const client = requireSupabase();
@@ -107,14 +109,22 @@ export async function loadState() {
     });
 
     if (localState && shouldPreferLocalState(localState, remoteState)) {
-      return reconcileStateLinks(localState);
+      return finalizeLoadedState(reconcileStateLinks(localState));
     }
 
-    return remoteState;
+    return finalizeLoadedState(remoteState);
   } catch (error) {
     console.warn("Falha ao carregar do Supabase. Usando cache local.", error);
-    return localState || createEmptyState();
+    return finalizeLoadedState(localState || createEmptyState());
   }
+}
+
+function finalizeLoadedState(state) {
+  const { state: nextState, seeded } = applyLibrarySeedIfEmpty(reconcileStateLinks(state));
+  if (seeded) {
+    nextState.__librarySeeded = true;
+  }
+  return nextState;
 }
 
 export async function saveState(state) {
@@ -144,6 +154,8 @@ export async function saveState(state) {
     throw new Error(`Parte do salvamento remoto falhou: ${syncErrors.join(", ")}. Os dados ficaram no cache local deste navegador.`);
   }
 }
+
+export { getTemplateDefaults } from "./scriptStructures.js";
 
 export function createId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -463,6 +475,7 @@ function fromLibraryRow(row) {
     platforms: row.platforms || [],
     notes: row.notes || "",
     example: row.example || "",
+    metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
     createdAt: row.created_at || ""
   };
 }
@@ -477,6 +490,7 @@ function toLibraryRow(item) {
     platforms: item.platforms || [],
     notes: item.notes || null,
     example: item.example || null,
+    metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {},
     created_at: item.createdAt || undefined
   };
 }
@@ -544,13 +558,7 @@ function normalizeDistribution(distribution) {
 }
 
 function normalizeScriptFields(fields, template) {
-  const nextFields = { ...getTemplateDefaults(template), ...(fields || {}) };
-  if (template === "tutorial") {
-    nextFields.steps = Array.isArray(nextFields.steps)
-      ? nextFields.steps
-      : String(nextFields.steps || "").split("\n").map(item => item.trim()).filter(Boolean);
-  }
-  return nextFields;
+  return normalizeScriptFieldsForTemplate(template, fields);
 }
 
 function reconcileStateLinks(state) {
@@ -603,33 +611,6 @@ function reconcileStateLinks(state) {
   }));
 
   return nextState;
-}
-
-function getTemplateDefaults(template) {
-  if (template === "educacional") {
-    return {
-      problema: "",
-      solucao: "",
-      prova: "",
-      cta: ""
-    };
-  }
-
-  if (template === "tutorial") {
-    return {
-      steps: []
-    };
-  }
-
-  return {
-    oQueAconteceu: "",
-    onde: "",
-    quando: "",
-    quemEstava: "",
-    comoFoi: "",
-    desfecho: "",
-    aprendizado: ""
-  };
 }
 
 function normalizePlatformList(platforms) {

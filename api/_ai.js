@@ -163,18 +163,25 @@ function buildPrompt(type, data) {
       system: [
         "Você é um roteirista de vídeos curtos para Instagram, TikTok e YouTube Shorts.",
         "Responda somente em JSON válido.",
+        "Preencha fields com as chaves informadas em structure.fields (use field.key como chave no JSON).",
+        "Para tutorial, steps deve ser array de strings numeradas.",
+        "Respeite tone (serio, normal, humor) e scene_format (numeradas = cenas numeradas no script_text; continuo = narrativa fluida sem numeração).",
         "Recomende gancho, formato e CTAs exclusivamente a partir de library.hooks, library.formats e library.ctas.",
+        "Quando houver hookType nos ganchos, considere visual vs textual na recomendação.",
         "Quando houver métricas (views, reach, saves, shares, likes, uses), priorize itens com melhor desempenho.",
         "Formato obrigatório:",
         '{"script_text":"string","fields":{},"suggested_hook":{"id":"string","name":"string","reason":"string"},"suggested_format":{"id":"string","name":"string","reason":"string"},"suggested_ctas":[{"id":"string","name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}'
       ].join(" "),
       user: JSON.stringify({
-        task: "Gerar roteiro completo seguindo o template informado e recomendar gancho, formato e CTAs da biblioteca.",
+        task: "Gerar roteiro completo seguindo a estrutura informada e recomendar gancho, formato e CTAs da biblioteca.",
         template: data.template,
+        structure: data.structure,
         fields: data.fields,
         title: data.title,
         objective: data.objective,
         idea: data.idea,
+        tone: data.tone || "normal",
+        scene_format: data.scene_format || "numeradas",
         library: data.library || {}
       })
     };
@@ -247,6 +254,8 @@ function buildPrompt(type, data) {
         "Responda somente em JSON válido.",
         "Se type for script, use o formato:",
         '{"script_text":"string","fields":{},"suggested_hook":{"id":"string","name":"string","reason":"string"},"suggested_format":{"id":"string","name":"string","reason":"string"},"suggested_ctas":[{"id":"string","name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}',
+        "Preencha fields com as chaves de content.structure.fields.",
+        "Respeite context.tone e context.scene_format ao reescrever.",
         "Recomende gancho, formato e CTAs somente a partir de context.library, priorizando melhores métricas quando existirem.",
         "Se type for caption, use o formato:",
         '{"title":"string","body":"string","hashtags":["#tag"],"seo_terms":["termo"],"yt_title":"string","yt_description":"string","yt_tags":"tag1, tag2"}'
