@@ -413,7 +413,6 @@ function renderInstagramOverview(items) {
 
   return `
     <div class="insight-grid polished">
-      ${renderInsightCard("Impressões", totals.impressions, "chart", "teal")}
       ${renderInsightCard("Alcance", totals.reach, "target", "blue")}
       ${renderInsightCard("Visualizações", totals.views, "eye", "green")}
       ${renderInsightCard("Visitas ao perfil", totals.profileViews, "user", "amber")}

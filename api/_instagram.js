@@ -455,7 +455,7 @@ async function syncInstagramAccount(supabase, account) {
 }
 
 async function getAccountInsights(account) {
-  const metrics = "impressions,reach,profile_views,follower_count";
+  const metrics = "reach,profile_views,follower_count";
 
   try {
     return await graphGet(`/${account.ig_user_id}/insights`, {
@@ -600,4 +600,3 @@ function classifyMedia(media) {
   if (media.media_type === "IMAGE") return "post";
   return "unknown";
 }
-
