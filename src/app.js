@@ -1,4 +1,5 @@
 import { assistantGateway } from "./ai/assistantGateway.js";
+import { streamGenerate } from "./ai/geminiClient.js";
 import { loadInstagramDashboard, syncInstagramInsights } from "./data/instagramInsights.js";
 import {
   createEmptyState,
@@ -99,6 +100,21 @@ let instagramError = new URLSearchParams(window.location.search).get("instagram_
 let captionDrafts = [];
 let editingIdeaId = null;
 let editingLibraryItemId = null;
+let aiDrafts = {
+  script: {
+    pieceId: null,
+    mode: "script",
+    loading: false,
+    text: "",
+    error: ""
+  },
+  caption: {
+    pieceId: null,
+    loading: false,
+    text: "",
+    error: ""
+  }
+};
 
 const shell = /** @type {HTMLElement} */ (document.querySelector("#app"));
 const nav = /** @type {HTMLElement} */ (document.querySelector("#sectionNav"));
@@ -404,6 +420,8 @@ function renderScriptPhase(piece, script, idea) {
   const ctaItems = getLibraryOptionsForSlot("cta");
   const selectedCtas = getPieceComponents(piece.id, "cta").map(component => component.libraryItemId).filter(Boolean);
   const canImproveScript = hasScriptContent(currentScript);
+  const scriptAiState = aiDrafts.script;
+  const isGeneratingScript = scriptAiState.loading && scriptAiState.pieceId === piece.id;
 
   return `
     <div class="stack">
@@ -433,12 +451,17 @@ function renderScriptPhase(piece, script, idea) {
           <small class="linked-video">A IA sugere os CTAs mais adequados com base no objetivo do brief.</small>
         </div>
         <div class="inline-actions">
-          <button class="ghost-action compact" type="button" data-script-generate="${piece.id}">Gerar pela IA</button>
-          <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${canImproveScript ? "" : "disabled"}>Melhorar com IA</button>
+          <button class="ghost-action compact" type="button" data-script-generate="${piece.id}" ${isGeneratingScript ? "disabled" : ""}>${isGeneratingScript ? "Gerando..." : "Gerar pela IA"}</button>
+          <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${canImproveScript && !isGeneratingScript ? "" : "disabled"}>${isGeneratingScript ? "Gerando..." : "Melhorar com IA"}</button>
         </div>
         <button class="primary-action" type="submit">Salvar roteiro</button>
         <small class="linked-video">${idea ? `A IA usa o título e a descrição da ideia "${escapeHtml(idea.title)}".` : "Vincule uma ideia para enriquecer a geração do roteiro."}</small>
       </form>
+      ${renderAiPreview({
+        title: "Prévia do roteiro",
+        state: scriptAiState,
+        visible: scriptAiState.pieceId === piece.id && (scriptAiState.loading || scriptAiState.text || scriptAiState.error)
+      })}
       ${renderComponentManager(piece.id, ["hook", "format"])}
     </div>
   `;
@@ -620,6 +643,8 @@ function renderTexts(query) {
     : (selectedCaptionPiece?.platforms?.length ? selectedCaptionPiece.platforms : ["instagram", "tiktok", "shorts"]);
   const captionTheme = selectedCaptionPiece ? getPieceTheme(selectedCaptionPiece) : "";
   const captionScript = selectedCaptionPiece ? getScriptSummary(selectedCaptionPiece.id) : "";
+  const captionAiState = aiDrafts.caption;
+  const isGeneratingCaption = captionAiState.loading && captionAiState.pieceId === selectedCaptionPiece?.id;
 
   return `
     <div class="stack">
@@ -654,8 +679,13 @@ function renderTexts(query) {
         <div class="checkbox-grid">
           ${renderPlatformCheckbox("platforms", defaultPlatforms)}
         </div>
-        <button class="primary-action" type="submit" ${selectedCaptionPiece ? "" : "disabled"}>Gerar com IA</button>
+        <button class="primary-action" type="submit" ${selectedCaptionPiece && !isGeneratingCaption ? "" : "disabled"}>${isGeneratingCaption ? "Gerando..." : "Gerar com IA"}</button>
       </form>
+      ${renderAiPreview({
+        title: "Prévia das legendas",
+        state: captionAiState,
+        visible: captionAiState.pieceId === selectedCaptionPiece?.id && (captionAiState.loading || captionAiState.text || captionAiState.error)
+      })}
 
       ${captionDrafts.length ? `
         <section class="caption-preview-grid">
@@ -667,6 +697,22 @@ function renderTexts(query) {
         ${texts.length ? texts.map(renderTextCard).join("") : emptyState("Nenhuma legenda salva ainda.", "Gere as primeiras legendas da peça para começar a distribuição.")}
       </section>
     </div>
+  `;
+}
+
+function renderAiPreview({ title, state: previewState, visible }) {
+  if (!visible) return "";
+
+  return `
+    <section class="panel stack">
+      <h3>${title}</h3>
+      ${previewState.error ? `<div class="notice warning"><strong>Erro na geração</strong><span>${escapeHtml(previewState.error)}</span></div>` : ""}
+      ${previewState.text ? `
+        <pre class="ai-preview">${escapeHtml(previewState.text)}${previewState.loading ? `<span class="stream-cursor" aria-hidden="true"></span>` : ""}</pre>
+      ` : previewState.loading ? `
+        <pre class="ai-preview"><span class="stream-cursor" aria-hidden="true"></span></pre>
+      ` : ""}
+    </section>
   `;
 }
 
@@ -1398,12 +1444,7 @@ function attachPieceEvents() {
     actionButton.addEventListener("click", async () => {
       const piece = state.pieces.find(item => item.id === actionButton.dataset.scriptGenerate);
       if (!piece) return;
-      const idea = state.ideas.find(item => item.id === piece.ideaId) || null;
-      const script = getOrCreateScript(piece.id);
-      script.fields = buildScriptFromIdea(script.template, piece, idea, script.fields);
-      syncSuggestedCtas(piece.id, suggestCtasForObjective(piece.brief.objective));
-      syncSuggestedHeaders(piece.id, buildHeaderSuggestions(script.template, script.fields, piece));
-      await persistAndRender();
+      await generateScriptWithAi(piece.id, "script");
     });
   });
 
@@ -1412,11 +1453,7 @@ function attachPieceEvents() {
     actionButton.addEventListener("click", async () => {
       const piece = state.pieces.find(item => item.id === actionButton.dataset.scriptImprove);
       if (!piece) return;
-      const script = getOrCreateScript(piece.id);
-      script.fields = improveScriptFields(script.template, script.fields, piece);
-      syncSuggestedCtas(piece.id, suggestCtasForObjective(piece.brief.objective));
-      syncSuggestedHeaders(piece.id, buildHeaderSuggestions(script.template, script.fields, piece));
-      await persistAndRender();
+      await generateScriptWithAi(piece.id, "improve");
     });
   });
 
@@ -1454,12 +1491,7 @@ function attachTextEvents() {
   generatorForm?.addEventListener("submit", event => {
     event.preventDefault();
     const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
-    const formData = new FormData(currentForm);
-    const pieceId = String(formData.get("pieceId") || "").trim() || null;
-    const platforms = getCheckedValues(currentForm, "platforms");
-    const piece = state.pieces.find(item => item.id === pieceId) || null;
-    captionDrafts = buildCaptionDrafts({ piece, pieceId, platforms });
-    render();
+    void generateCaptionsWithAi(currentForm);
   });
 
   generatorForm?.querySelector('select[name="pieceId"]')?.addEventListener("change", event => {
@@ -1841,6 +1873,235 @@ function buildCaptionDrafts({ piece, pieceId, platforms }) {
   });
 }
 
+async function generateScriptWithAi(pieceId, mode) {
+  const piece = state.pieces.find(item => item.id === pieceId);
+  if (!piece) return;
+  const idea = state.ideas.find(item => item.id === piece.ideaId) || null;
+  const script = getOrCreateScript(piece.id);
+
+  aiDrafts.script = {
+    pieceId,
+    mode,
+    loading: true,
+    text: "",
+    error: ""
+  };
+  render();
+
+  const type = mode === "improve" ? "improve" : "script";
+  const data = mode === "improve"
+    ? {
+      type: "script",
+      content: {
+        template: script.template,
+        fields: script.fields,
+        script_text: getScriptSummary(piece.id)
+      },
+      context: {
+        title: piece.title,
+        objective: piece.brief.objective,
+        platform: piece.platforms,
+        idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null
+      }
+    }
+    : {
+      template: script.template,
+      fields: script.fields,
+      title: piece.title,
+      objective: piece.brief.objective,
+      idea: idea ? { title: idea.title, angle: idea.angle, description: idea.description } : null
+    };
+
+  try {
+    await streamGenerate({
+      type,
+      data,
+      onChunk: (_chunk, fullText) => {
+        aiDrafts.script = {
+          ...aiDrafts.script,
+          loading: true,
+          text: fullText
+        };
+        render();
+      },
+      onDone: fullText => {
+        const parsed = parseAiJson(fullText);
+        applyScriptAiResult(piece.id, parsed);
+        aiDrafts.script = {
+          ...aiDrafts.script,
+          loading: false,
+          text: parsed?.script_text || fullText,
+          error: ""
+        };
+      },
+      onError: error => {
+        aiDrafts.script = {
+          ...aiDrafts.script,
+          loading: false,
+          error: error.message
+        };
+        render();
+      }
+    });
+    await persistAndRender();
+  } catch {
+    render();
+  }
+}
+
+async function generateCaptionsWithAi(form) {
+  const formData = new FormData(form);
+  const pieceId = String(formData.get("pieceId") || "").trim() || null;
+  const platforms = getCheckedValues(form, "platforms");
+  const piece = state.pieces.find(item => item.id === pieceId) || null;
+  if (!piece) return;
+
+  aiDrafts.caption = {
+    pieceId,
+    loading: true,
+    text: "",
+    error: ""
+  };
+  captionDrafts = [];
+  render();
+
+  try {
+    await streamGenerate({
+      type: "caption",
+      data: {
+        title: piece.title,
+        script: getScriptSummary(piece.id),
+        objective: piece.brief.objective,
+        platforms,
+        hashtags: assistantGateway.collectCaptionContext(state).hashtags.map(item => item.label),
+        seo_terms: assistantGateway.collectCaptionContext(state).seoTerms.map(item => item.label)
+      },
+      onChunk: (_chunk, fullText) => {
+        aiDrafts.caption = {
+          ...aiDrafts.caption,
+          loading: true,
+          text: fullText
+        };
+        render();
+      },
+      onDone: fullText => {
+        const parsed = parseAiJson(fullText);
+        captionDrafts = buildCaptionDraftsFromAi(parsed, pieceId, platforms);
+        aiDrafts.caption = {
+          ...aiDrafts.caption,
+          loading: false,
+          text: fullText,
+          error: ""
+        };
+      },
+      onError: error => {
+        aiDrafts.caption = {
+          ...aiDrafts.caption,
+          loading: false,
+          error: error.message
+        };
+        render();
+      }
+    });
+    render();
+  } catch {
+    render();
+  }
+}
+
+function applyScriptAiResult(pieceId, parsed) {
+  const piece = state.pieces.find(item => item.id === pieceId);
+  const script = getOrCreateScript(pieceId);
+  if (!piece || !parsed) return;
+
+  if (parsed.fields && typeof parsed.fields === "object") {
+    script.fields = normalizeAiScriptFields(script.template, parsed.fields);
+  }
+
+  if (Array.isArray(parsed.suggested_ctas)) {
+    const ctaIds = parsed.suggested_ctas
+      .map(item => findLibraryIdByName("cta", item.name))
+      .filter(Boolean);
+    if (ctaIds.length) {
+      syncSuggestedCtas(pieceId, ctaIds);
+    }
+  }
+
+  if (Array.isArray(parsed.text_headers) || parsed.header_recommendation) {
+    const headers = Array.isArray(parsed.text_headers)
+      ? parsed.text_headers.map(item => ({ label: item.label || item.text || "", moment: item.moment || "" })).filter(item => item.label)
+      : [];
+    syncSuggestedHeaders(pieceId, headers, parsed.header_recommendation || "");
+  }
+
+  script.updatedAt = new Date().toISOString();
+}
+
+function buildCaptionDraftsFromAi(parsed, pieceId, platforms) {
+  const selectedPlatforms = platforms.length ? platforms : ["instagram", "tiktok", "shorts"];
+  const platformPayload = parsed?.platforms || {};
+
+  return selectedPlatforms.map(platform => {
+    const data = platformPayload[platform] || {};
+    const hashtags = normalizeHashtags(data.hashtags || []);
+    return {
+      id: createId("draft"),
+      pieceId: pieceId || null,
+      platform,
+      title: String(data.title || ""),
+      body: String(data.body || ""),
+      seoTerms: Array.isArray(data.seo_terms) ? data.seo_terms.filter(Boolean) : [],
+      hashtags,
+      ytTitle: String(data.yt_title || ""),
+      ytDescription: String(data.yt_description || ""),
+      ytTags: String(data.yt_tags || "")
+    };
+  });
+}
+
+function parseAiJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start !== -1 && end !== -1 && end > start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    throw new Error("A IA respondeu em um formato inesperado.");
+  }
+}
+
+function normalizeAiScriptFields(template, fields) {
+  if (template === "tutorial") {
+    const steps = Array.isArray(fields.steps)
+      ? fields.steps
+      : String(fields.steps || "")
+        .split("\n")
+        .map(item => item.trim())
+        .filter(Boolean);
+    return { steps };
+  }
+
+  const nextFields = {};
+  for (const field of scriptTemplates[template] || []) {
+    nextFields[field.key] = String(fields[field.key] || "").trim();
+  }
+  return nextFields;
+}
+
+function normalizeHashtags(hashtags) {
+  return (Array.isArray(hashtags) ? hashtags : [])
+    .map(item => String(item || "").trim())
+    .filter(Boolean)
+    .map(stripHash);
+}
+
+function findLibraryIdByName(category, name) {
+  const token = normalizeToken(name);
+  return state.library.find(item => item.category === category && normalizeToken(item.name) === token)?.id || null;
+}
+
 function buildLibraryPerformanceRows(category) {
   if (category === "text_header") {
     const usedHeaders = state.pieceComponents.filter(item => item.slot === "text_header" && item.used);
@@ -2150,7 +2411,7 @@ function syncSuggestedCtas(pieceId, libraryItemIds) {
   syncMultiLibraryComponents(pieceId, "cta", libraryItemIds, { required: true, used: true });
 }
 
-function syncSuggestedHeaders(pieceId, suggestions) {
+function syncSuggestedHeaders(pieceId, suggestions, recommendation = "") {
   const current = getHeaderComponents(pieceId);
   const nextByLabel = new Map(suggestions.map(item => [normalizeToken(item.label), item]));
 
@@ -2183,9 +2444,9 @@ function syncSuggestedHeaders(pieceId, suggestions) {
 
   const piece = state.pieces.find(item => item.id === pieceId);
   if (piece) {
-    piece.edit.headerRecommendation = suggestions.length
+    piece.edit.headerRecommendation = recommendation || (suggestions.length
       ? "A peça pode usar headers para reforçar pontos-chave e CTA visual."
-      : "Esta peça pode funcionar bem sem header textual em tela.";
+      : "Esta peça pode funcionar bem sem header textual em tela.");
     piece.edit.headerSuggestions = suggestions.map(item => item.label);
   }
 }

@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import { handleAiGenerate } from "./api/_ai.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.argv[2] || process.env.PORT || 4179);
@@ -80,6 +81,13 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (parsedUrl.pathname === "/api/ai/generate") {
+    await handleAiGenerate(request, response, {
+      apiKey: serverConfig.GEMINI_API_KEY
+    });
+    return;
+  }
+
   const filePath = resolveRequestPath(request.url);
 
   if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
@@ -126,7 +134,8 @@ function loadServerConfig() {
     META_REDIRECT_URI: process.env.META_REDIRECT_URI || fileEnv.META_REDIRECT_URI || `http://127.0.0.1:${port}/api/instagram/callback`,
     META_AUTH_MODE: process.env.META_AUTH_MODE || fileEnv.META_AUTH_MODE || "facebook",
     META_LOGIN_CONFIG_ID: process.env.META_LOGIN_CONFIG_ID || fileEnv.META_LOGIN_CONFIG_ID || "",
-    META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || fileEnv.META_GRAPH_API_VERSION || "v25.0"
+    META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || fileEnv.META_GRAPH_API_VERSION || "v25.0",
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY || fileEnv.GEMINI_API_KEY || ""
   };
 }
 
