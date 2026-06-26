@@ -416,7 +416,6 @@ function renderInstagramOverview(items) {
       ${renderInsightCard("Alcance", totals.reach, "target", "blue")}
       ${renderInsightCard("Visualizações", totals.views, "eye", "green")}
       ${renderInsightCard("Visitas ao perfil", totals.profileViews, "user", "amber")}
-      ${renderInsightCard("Seguidores", totals.followers, "users", "violet")}
       ${renderInsightCard("Curtidas", totals.likes, "heart", "rose")}
       ${renderInsightCard("Comentários", totals.comments, "message", "cyan")}
       ${renderInsightCard("Salvamentos", totals.saves, "bookmark", "olive")}

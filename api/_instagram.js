@@ -455,20 +455,54 @@ async function syncInstagramAccount(supabase, account) {
 }
 
 async function getAccountInsights(account) {
-  const metrics = "reach,profile_views,follower_count";
+  const baseUrl = getGraphBaseUrlForAccount(account);
+  const responses = [];
+  const errors = [];
 
-  try {
-    return await graphGet(`/${account.ig_user_id}/insights`, {
-      metric: metrics,
-      period: "day",
-      access_token: account.access_token
-    }, getGraphBaseUrlForAccount(account));
-  } catch (error) {
-    return {
-      data: [],
-      error: error.message
-    };
+  const requests = [
+    {
+      metric: "reach",
+      params: {
+        metric: "reach",
+        period: "day",
+        access_token: account.access_token
+      }
+    },
+    {
+      metric: "profile_views",
+      params: {
+        metric: "profile_views",
+        period: "day",
+        metric_type: "total_value",
+        access_token: account.access_token
+      }
+    },
+    {
+      metric: "follower_count",
+      params: {
+        metric: "follower_count",
+        period: "day",
+        access_token: account.access_token
+      }
+    }
+  ];
+
+  for (const request of requests) {
+    try {
+      const payload = await graphGet(`/${account.ig_user_id}/insights`, request.params, baseUrl);
+      responses.push(...(payload.data || []));
+    } catch (error) {
+      errors.push({
+        metric: request.metric,
+        error: error.message
+      });
+    }
   }
+
+  return {
+    data: responses,
+    errors
+  };
 }
 
 async function getMediaInsights(mediaId, accessToken, account) {
@@ -547,7 +581,7 @@ function normalizeInsightPayload(payload = {}) {
   const metrics = normalizeMetrics();
 
   (payload.data || []).forEach(item => {
-    const value = Array.isArray(item.values) ? item.values.at(-1)?.value : item.value;
+    const value = item.total_value?.value ?? (Array.isArray(item.values) ? item.values.at(-1)?.value : item.value);
     const numberValue = Number(value || 0);
 
     if (item.name === "reach") metrics.reach = numberValue;
