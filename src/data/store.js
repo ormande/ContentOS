@@ -468,19 +468,14 @@ function normalizeBrief(brief, fallback = {}) {
 
 function normalizeCapture(capture, fallback = {}) {
   return {
-    cameraPlan: capture?.cameraPlan || "",
-    takes: capture?.takes || "",
-    materials: capture?.materials || listToMultiline(fallback?.materials || []),
     driveUrl: capture?.driveUrl || ""
   };
 }
 
 function normalizeEdit(edit, fallback = {}) {
   return {
-    notes: edit?.notes || "",
-    musicDirection: edit?.musicDirection || "",
-    soundDirection: edit?.soundDirection || "",
-    textHeaders: edit?.textHeaders || ""
+    headerRecommendation: edit?.headerRecommendation || "",
+    headerSuggestions: edit?.headerSuggestions || []
   };
 }
 

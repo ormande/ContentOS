@@ -53,6 +53,12 @@ const slotLabels = {
 };
 
 const requiredSlots = ["hook", "format", "script_structure", "cta", "camera_angle"];
+const objectiveOptions = [
+  "aumentar conexão com público",
+  "gerar views",
+  "gerar seguidores",
+  "educar para venda"
+];
 
 const scriptTemplates = {
   storytelling: [
@@ -91,6 +97,8 @@ let instagramCustomEnd = "";
 let isInstagramSyncing = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
 let captionDrafts = [];
+let editingIdeaId = null;
+let editingLibraryItemId = null;
 
 const shell = /** @type {HTMLElement} */ (document.querySelector("#app"));
 const nav = /** @type {HTMLElement} */ (document.querySelector("#sectionNav"));
@@ -203,27 +211,32 @@ function renderIdeas(query) {
     idea.angle,
     idea.tags.join(" ")
   ], query));
+  const editingIdea = state.ideas.find(idea => idea.id === editingIdeaId) || null;
 
   return `
     <div class="grid two">
       <form class="panel form-panel" id="ideaForm">
-        <h3>Nova ideia</h3>
-        <input name="title" placeholder="Título da ideia" required />
-        <input name="source" placeholder="Origem" />
-        <textarea name="description" placeholder="Descrição da ideia"></textarea>
-        <textarea name="angle" placeholder="Ângulo editorial"></textarea>
-        <input name="tags" placeholder="hashtags ou tags separadas por vírgula" />
+        <h3>${editingIdea ? "Editar ideia" : "Nova ideia"}</h3>
+        <input type="hidden" name="ideaId" value="${escapeHtml(editingIdea?.id || "")}" />
+        <input name="title" value="${escapeHtml(editingIdea?.title || "")}" placeholder="Título da ideia" required />
+        <input name="source" value="${escapeHtml(editingIdea?.source || "")}" placeholder="Origem" />
+        <textarea name="description" placeholder="Descrição da ideia">${escapeHtml(editingIdea?.description || "")}</textarea>
+        <textarea name="angle" placeholder="Ângulo editorial">${escapeHtml(editingIdea?.angle || "")}</textarea>
+        <input name="tags" value="${escapeHtml((editingIdea?.tags || []).join(", "))}" placeholder="hashtags ou tags separadas por vírgula" />
         <select name="priority">
-          <option value="alta">Prioridade alta</option>
-          <option value="média" selected>Prioridade média</option>
-          <option value="baixa">Prioridade baixa</option>
+          <option value="alta" ${(editingIdea?.priority || "média") === "alta" ? "selected" : ""}>Prioridade alta</option>
+          <option value="média" ${(editingIdea?.priority || "média") === "média" ? "selected" : ""}>Prioridade média</option>
+          <option value="baixa" ${(editingIdea?.priority || "média") === "baixa" ? "selected" : ""}>Prioridade baixa</option>
         </select>
         <select name="status">
-          <option value="disponivel">Disponível</option>
-          <option value="em_producao">Em produção</option>
-          <option value="reaproveitavel">Reaproveitável</option>
+          <option value="disponivel" ${(editingIdea?.status || "disponivel") === "disponivel" ? "selected" : ""}>Disponível</option>
+          <option value="em_producao" ${(editingIdea?.status || "disponivel") === "em_producao" ? "selected" : ""}>Em produção</option>
+          <option value="reaproveitavel" ${(editingIdea?.status || "disponivel") === "reaproveitavel" ? "selected" : ""}>Reaproveitável</option>
         </select>
-        <button class="primary-action" type="submit">Salvar ideia</button>
+        <div class="inline-actions">
+          <button class="primary-action" type="submit">${editingIdea ? "Salvar alterações" : "Salvar ideia"}</button>
+          ${editingIdea ? `<button class="ghost-action compact" type="button" id="cancelIdeaEdit">Cancelar</button>` : ""}
+        </div>
       </form>
 
       <div class="stack">
@@ -239,6 +252,8 @@ function renderIdeas(query) {
             <small class="linked-video">Prioridade: ${escapeHtml(idea.priority || "média")}</small>
             <div class="inline-actions">
               <button class="ghost-action compact" type="button" data-promote-idea="${idea.id}">Criar peça</button>
+              <button class="ghost-action compact" type="button" data-edit-idea="${idea.id}">Editar</button>
+              <button class="ghost-action compact" type="button" data-delete-idea="${idea.id}">Excluir</button>
               <button class="ghost-action compact" type="button" data-toggle-idea-status="${idea.id}">Marcar reaproveitável</button>
             </div>
           </article>
@@ -278,12 +293,13 @@ function renderPieces(query) {
           ${pieces.length ? pieces.map(piece => {
             const metrics = getPieceInstagramMetrics(piece.id);
             const missing = getMissingRequiredSlots(piece.id);
+            const progress = getPieceProgress(piece);
             return `
               <button class="piece-list-item ${piece.id === selectedPiece?.id ? "active" : ""}" type="button" data-piece-select="${piece.id}">
                 <strong>${escapeHtml(piece.title)}</strong>
                 <span>${findIdeaTitle(piece.ideaId)}</span>
                 <small>${piece.platforms.length ? piece.platforms.map(formatPlatform).join(", ") : "sem plataformas"}</small>
-                <small>${formatNumber(metrics.views)} views | ${missing.length} pendências</small>
+                <small>${progress.completed}/${progress.total} fases | ${formatNumber(metrics.views)} views | ${missing.length} pendências</small>
               </button>
             `;
           }).join("") : emptyState("Nenhuma peça criada ainda.", "Crie a primeira peça para começar o montador.")}
@@ -302,13 +318,13 @@ function renderPieceWorkspace(piece) {
   const idea = state.ideas.find(item => item.id === piece.ideaId) || null;
   const linkedMetrics = getPieceInstagramMetrics(piece.id);
   const missingSlots = getMissingRequiredSlots(piece.id);
-  const completedPhases = phaseOrder.filter(phase => isPhaseComplete(piece, phase)).length;
+  const progress = getPieceProgress(piece);
 
   return `
     <section class="panel">
       <div class="item-topline">
         <span>${idea ? `Ideia: ${escapeHtml(idea.title)}` : "Sem ideia vinculada"}</span>
-        <strong>${completedPhases}/${phaseOrder.length} fases encaminhadas</strong>
+        <strong>${progress.completed}/${progress.total} fases encaminhadas</strong>
       </div>
       <h3>${escapeHtml(piece.title)}</h3>
       <p>${escapeHtml(piece.brief.promise || idea?.description || "Defina a promessa do conteúdo para orientar o vídeo.")}</p>
@@ -319,6 +335,21 @@ function renderPieceWorkspace(piece) {
         ${renderMiniMetric("Salvos", linkedMetrics.saves)}
       </div>
       ${missingSlots.length ? `<div class="notice warning"><strong>Slots obrigatórios faltando:</strong><span>${missingSlots.map(formatSlotLabel).join(", ")}</span></div>` : `<div class="notice success"><strong>Base obrigatória preenchida.</strong><span>Os slots essenciais da peça já estão vinculados.</span></div>`}
+      <div class="inline-actions">
+        <button class="ghost-action compact" type="button" data-delete-piece="${piece.id}">Excluir peça</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Progresso do vídeo</h3>
+      <div class="phase-progress-grid">
+        ${buildPiecePhaseStatus(piece).map(step => `
+          <div class="phase-progress-card ${step.complete ? "complete" : step.warning ? "warning" : ""}">
+            <strong>${step.label}</strong>
+            <span>${step.description}</span>
+          </div>
+        `).join("")}
+      </div>
     </section>
 
     <div class="phase-tabs" role="tablist" aria-label="Fases do vídeo">
@@ -350,11 +381,12 @@ function renderBriefPhase(piece, idea) {
         <option value="">Sem ideia vinculada</option>
         ${state.ideas.map(item => `<option value="${item.id}" ${item.id === piece.ideaId ? "selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}
       </select>
-      <textarea name="objective" placeholder="Objetivo">${escapeHtml(piece.brief.objective)}</textarea>
+      <select name="objective">
+        <option value="">Selecione o objetivo do vídeo</option>
+        ${objectiveOptions.map(option => `<option value="${option}" ${piece.brief.objective === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+      </select>
       <textarea name="promise" placeholder="Promessa">${escapeHtml(piece.brief.promise)}</textarea>
-      <input name="owner" value="${escapeHtml(piece.brief.owner || piece.owner || "")}" placeholder="Responsável" />
       <input name="due" type="date" value="${escapeHtml(piece.due || "")}" />
-      <input name="cta" value="${escapeHtml(piece.brief.cta)}" placeholder="CTA principal" />
       <div class="checkbox-grid">
         ${renderPlatformCheckbox("platforms", piece.platforms)}
       </div>
@@ -367,58 +399,115 @@ function renderBriefPhase(piece, idea) {
 function renderScriptPhase(piece, script, idea) {
   const currentScript = script || createLocalScript(piece.id);
   const fields = scriptTemplates[currentScript.template] || scriptTemplates.storytelling;
+  const structureComponent = getPrimaryComponent(piece.id, "script_structure");
+  const structureItems = getLibraryOptionsForSlot("script_structure");
+  const ctaItems = getLibraryOptionsForSlot("cta");
+  const selectedCtas = getPieceComponents(piece.id, "cta").map(component => component.libraryItemId).filter(Boolean);
+  const canImproveScript = hasScriptContent(currentScript);
 
   return `
     <div class="stack">
       <form class="panel stack" data-piece-form="script" data-piece-id="${piece.id}">
         <h3>Roteiro</h3>
-        <select name="template">
-          ${Object.keys(scriptTemplates).map(template => `<option value="${template}" ${template === currentScript.template ? "selected" : ""}>${formatTemplateLabel(template)}</option>`).join("")}
-        </select>
+        ${renderLibrarySingleSelect({
+          fieldName: "structureItemId",
+          category: "estrutura_roteiro",
+          value: structureComponent?.libraryItemId || "",
+          options: structureItems,
+          placeholder: "Escolha a estrutura de roteiro",
+          addLabel: "+ Adicionar nova estrutura",
+          dataset: `data-script-structure-select="${piece.id}"`
+        })}
         ${fields.map(field => renderScriptField(currentScript, field)).join("")}
+        <div class="stack mini">
+          <strong>CTA da peça</strong>
+          <div class="checkbox-grid">
+            ${ctaItems.map(item => `
+              <label class="checkbox-pill">
+                <input type="checkbox" name="ctaIds" value="${item.id}" ${selectedCtas.includes(item.id) ? "checked" : ""} />
+                <span>${escapeHtml(item.name)}</span>
+              </label>
+            `).join("")}
+          </div>
+          <button class="ghost-action compact align-start" type="button" data-quick-add-library="cta">+ Adicionar novo CTA</button>
+          <small class="linked-video">A IA sugere os CTAs mais adequados com base no objetivo do brief.</small>
+        </div>
         <div class="inline-actions">
           <button class="ghost-action compact" type="button" data-script-generate="${piece.id}">Gerar pela IA</button>
-          <button class="ghost-action compact" type="button" data-script-improve="${piece.id}">Melhorar texto</button>
+          <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${canImproveScript ? "" : "disabled"}>Melhorar com IA</button>
         </div>
         <button class="primary-action" type="submit">Salvar roteiro</button>
         <small class="linked-video">${idea ? `A IA usa o título e a descrição da ideia "${escapeHtml(idea.title)}".` : "Vincule uma ideia para enriquecer a geração do roteiro."}</small>
       </form>
-
-      ${renderComponentManager(piece.id, ["hook", "format", "script_structure", "cta"])}
+      ${renderComponentManager(piece.id, ["hook", "format"])}
     </div>
   `;
 }
 
 function renderCapturePhase(piece) {
+  const angleItems = getLibraryOptionsForSlot("camera_angle");
+  const selectedAngles = getPieceComponents(piece.id, "camera_angle").map(component => component.libraryItemId).filter(Boolean);
   return `
     <div class="stack">
       <form class="panel stack" data-piece-form="capture" data-piece-id="${piece.id}">
         <h3>Captação</h3>
-        <textarea name="cameraPlan" placeholder="Plano de câmera">${escapeHtml(piece.capture.cameraPlan)}</textarea>
-        <textarea name="takes" placeholder="Takes">${escapeHtml(piece.capture.takes)}</textarea>
-        <textarea name="materials" placeholder="Materiais">${escapeHtml(piece.capture.materials)}</textarea>
+        <label class="field-stack">
+          <span>Ângulos de câmera</span>
+          <select name="cameraAngleIds" multiple size="${Math.max(4, Math.min(8, angleItems.length || 4))}">
+            ${angleItems.map(item => `<option value="${item.id}" ${selectedAngles.includes(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+          </select>
+        </label>
+        <button class="ghost-action compact align-start" type="button" data-quick-add-library="angulo_camera">+ Adicionar novo ângulo</button>
         <input name="driveUrl" value="${escapeHtml(piece.capture.driveUrl)}" placeholder="Link do Google Drive" />
+        ${piece.capture.driveUrl ? `<a class="ghost-action compact dashboard-connect" href="${escapeHtml(piece.capture.driveUrl)}" target="_blank" rel="noreferrer">Abrir Drive</a>` : ""}
         <button class="primary-action" type="submit">Salvar captação</button>
       </form>
-
-      ${renderComponentManager(piece.id, ["camera_angle"])}
     </div>
   `;
 }
 
 function renderEditPhase(piece) {
+  const musicComponent = getPrimaryComponent(piece.id, "music");
+  const soundComponent = getPrimaryComponent(piece.id, "sound_effect");
+  const musicItems = getLibraryOptionsForSlot("music");
+  const soundItems = getLibraryOptionsForSlot("sound_effect");
+  const headerComponents = getHeaderComponents(piece.id);
   return `
     <div class="stack">
       <form class="panel stack" data-piece-form="edit" data-piece-id="${piece.id}">
         <h3>Edição</h3>
-        <input name="musicDirection" value="${escapeHtml(piece.edit.musicDirection)}" placeholder="Direção de música" />
-        <input name="soundDirection" value="${escapeHtml(piece.edit.soundDirection)}" placeholder="Direção de efeitos sonoros" />
-        <textarea name="textHeaders" placeholder="Headers de texto na tela">${escapeHtml(piece.edit.textHeaders)}</textarea>
-        <textarea name="notes" placeholder="Observações de edição">${escapeHtml(piece.edit.notes)}</textarea>
+        ${renderLibrarySingleSelect({
+          fieldName: "musicItemId",
+          category: "musica",
+          value: musicComponent?.libraryItemId || "",
+          options: musicItems,
+          placeholder: "Selecione a música",
+          addLabel: "+ Adicionar nova música"
+        })}
+        ${renderLibrarySingleSelect({
+          fieldName: "soundEffectItemId",
+          category: "efeito_sonoro",
+          value: soundComponent?.libraryItemId || "",
+          options: soundItems,
+          placeholder: "Selecione o efeito sonoro",
+          addLabel: "+ Adicionar novo efeito"
+        })}
+        <div class="notice">
+          <strong>Recomendação de header</strong>
+          <span>${escapeHtml(piece.edit.headerRecommendation || "Sem recomendação ainda. Gere o roteiro com IA para receber a sugestão.")}</span>
+        </div>
+        <div class="stack mini">
+          <strong>Headers sugeridos</strong>
+          ${headerComponents.length ? headerComponents.map(component => `
+            <label class="line-card">
+              <strong>${escapeHtml(component.notes || "Header sugerido")}</strong>
+              <span>Conta no geral como uso de headers, sem separar métricas por header individual.</span>
+              <span><input type="checkbox" name="usedHeaderIds" value="${component.id}" ${component.used ? "checked" : ""} /> marcar como usado</span>
+            </label>
+          `).join("") : `<p>Nenhum header sugerido ainda.</p>`}
+        </div>
         <button class="primary-action" type="submit">Salvar edição</button>
       </form>
-
-      ${renderComponentManager(piece.id, ["music", "sound_effect", "text_header"])}
     </div>
   `;
 }
@@ -488,6 +577,7 @@ function renderComponentManager(pieceId, slots) {
                 <option value="">${options.length ? "Selecione da biblioteca" : "Sem itens na biblioteca"}</option>
                 ${options.map(option => `<option value="${option.id}">${escapeHtml(option.name)}</option>`).join("")}
               </select>
+              <button class="ghost-action compact" type="button" data-quick-add-library="${getLibraryCategoryForSlot(slot)}">+ Adicionar novo</button>
               <input name="notes" placeholder="Notas rápidas" />
               <button class="ghost-action compact" type="submit">Adicionar</button>
             </form>
@@ -524,9 +614,12 @@ function renderTexts(query) {
     text.hashtags.join(" ")
   ], query));
 
+  const selectedCaptionPiece = state.pieces.find(piece => piece.id === (captionDrafts[0]?.pieceId || selectedPieceId)) || state.pieces[0] || null;
   const defaultPlatforms = captionDrafts.length
     ? captionDrafts.map(item => item.platform)
-    : ["instagram", "tiktok", "shorts"];
+    : (selectedCaptionPiece?.platforms?.length ? selectedCaptionPiece.platforms : ["instagram", "tiktok", "shorts"]);
+  const captionTheme = selectedCaptionPiece ? getPieceTheme(selectedCaptionPiece) : "";
+  const captionScript = selectedCaptionPiece ? getScriptSummary(selectedCaptionPiece.id) : "";
 
   return `
     <div class="stack">
@@ -545,18 +638,23 @@ function renderTexts(query) {
         <h3>Gerar legendas com IA</h3>
         <div class="notice">
           <strong>Fluxo padrão</strong>
-          <span>Preencha título e tema, escolha as plataformas e gere as legendas daqui mesmo. O histórico de hashtags e termos SEO do banco é usado como contexto.</span>
+          <span>A IA lê o título da peça, o objetivo do brief, o roteiro gerado, hashtags e termos SEO já usados no banco para montar a legenda de cada plataforma.</span>
         </div>
         <select name="pieceId">
-          <option value="">Sem peça vinculada</option>
-          ${state.pieces.map(piece => `<option value="${piece.id}">${escapeHtml(piece.title)}</option>`).join("")}
+          ${state.pieces.map(piece => `<option value="${piece.id}" ${piece.id === selectedCaptionPiece?.id ? "selected" : ""}>${escapeHtml(piece.title)}</option>`).join("")}
         </select>
-        <input name="title" placeholder="Título do vídeo" required />
-        <textarea name="theme" placeholder="Tema do vídeo" required></textarea>
+        ${selectedCaptionPiece ? `
+          <div class="line-card">
+            <strong>${escapeHtml(selectedCaptionPiece.title)}</strong>
+            <span>Objetivo: ${escapeHtml(selectedCaptionPiece.brief.objective || "não definido")}</span>
+            <span>Tema: ${escapeHtml(captionTheme || "sem tema definido")}</span>
+            <span>Roteiro: ${escapeHtml(captionScript || "sem roteiro salvo ainda")}</span>
+          </div>
+        ` : `<p>Selecione uma peça para gerar as legendas.</p>`}
         <div class="checkbox-grid">
           ${renderPlatformCheckbox("platforms", defaultPlatforms)}
         </div>
-        <button class="primary-action" type="submit">Gerar com IA</button>
+        <button class="primary-action" type="submit" ${selectedCaptionPiece ? "" : "disabled"}>Gerar com IA</button>
       </form>
 
       ${captionDrafts.length ? `
@@ -683,6 +781,7 @@ function renderLibrary(query) {
     item.platforms.join(" ")
   ], query));
   const performanceRows = buildLibraryPerformanceRows(currentLibraryCategory);
+  const editingLibraryItem = state.library.find(item => item.id === editingLibraryItemId) || null;
 
   return `
     <div class="library-layout">
@@ -702,6 +801,23 @@ function renderLibrary(query) {
       </aside>
 
       <div class="stack library-content">
+        <form class="panel stack" id="libraryForm">
+          <h3>${editingLibraryItem ? "Editar item da biblioteca" : "Novo item da biblioteca"}</h3>
+          <input type="hidden" name="libraryItemId" value="${escapeHtml(editingLibraryItem?.id || "")}" />
+          <input name="name" value="${escapeHtml(editingLibraryItem?.name || "")}" placeholder="Nome do item" required />
+          <input type="hidden" name="category" value="${escapeHtml(currentLibraryCategory)}" />
+          <input name="notes" value="${escapeHtml(editingLibraryItem?.notes || "")}" placeholder="Notas" />
+          <input name="example" value="${escapeHtml(editingLibraryItem?.example || "")}" placeholder="Exemplo" />
+          <input name="context" value="${escapeHtml((editingLibraryItem?.context || []).join(", "))}" placeholder="Contextos separados por vírgula" />
+          <div class="checkbox-grid">
+            ${renderPlatformCheckbox("platforms", editingLibraryItem?.platforms || ["instagram", "tiktok", "shorts"])}
+          </div>
+          <div class="inline-actions">
+            <button class="primary-action" type="submit">${editingLibraryItem ? "Salvar alterações" : "Salvar item"}</button>
+            ${editingLibraryItem ? `<button class="ghost-action compact" type="button" id="cancelLibraryEdit">Cancelar</button>` : ""}
+          </div>
+        </form>
+
         <section class="panel">
           <h3>${escapeHtml(getCategoryLabel(currentLibraryCategory))}</h3>
           <p>Os componentes marcados como usados nas peças recebem as métricas das publicações reais ligadas ao Instagram.</p>
@@ -717,6 +833,10 @@ function renderLibrary(query) {
             <p>${escapeHtml(item.notes || "Sem notas ainda.")}</p>
             ${item.example ? `<small>${escapeHtml(item.example)}</small>` : ""}
             <div class="tag-row">${item.context.map(context => `<span>${escapeHtml(context)}</span>`).join("")}</div>
+            <div class="inline-actions">
+              <button class="ghost-action compact" type="button" data-edit-library="${item.id}">Editar</button>
+              <button class="ghost-action compact" type="button" data-delete-library="${item.id}">Excluir</button>
+            </div>
           </article>
         `).join("")}</div>` : emptyState("Sem itens nessa categoria.", "Cadastre ou sincronize componentes para começar a vincular às peças.")}
 
@@ -984,17 +1104,31 @@ function renderUsedComponentPerformance(pieceId) {
   if (!components.length) return `<p>Nenhum componente marcado como usado ainda.</p>`;
 
   const metrics = getPieceInstagramMetrics(pieceId);
+  const hasHeaders = components.some(component => component.slot === "text_header");
+  const rows = components
+    .filter(component => component.slot !== "text_header")
+    .map(component => {
+      const item = state.library.find(entry => entry.id === component.libraryItemId);
+      return `
+        <div class="line-card">
+          <strong>${escapeHtml(item?.name || formatSlotLabel(component.slot))}</strong>
+          <span>${formatSlotLabel(component.slot)} • ${formatNumber(metrics.views)} views • ${formatNumber(metrics.saves)} salvos</span>
+        </div>
+      `;
+    });
+
+  if (hasHeaders) {
+    rows.push(`
+      <div class="line-card">
+        <strong>Headers de texto</strong>
+        <span>Uso geral de headers • ${formatNumber(metrics.views)} views • ${formatNumber(metrics.saves)} salvos</span>
+      </div>
+    `);
+  }
+
   return `
     <div class="stack mini">
-      ${components.map(component => {
-        const item = state.library.find(entry => entry.id === component.libraryItemId);
-        return `
-          <div class="line-card">
-            <strong>${escapeHtml(item?.name || formatSlotLabel(component.slot))}</strong>
-            <span>${formatSlotLabel(component.slot)} • ${formatNumber(metrics.views)} views • ${formatNumber(metrics.saves)} salvos</span>
-          </div>
-        `;
-      }).join("")}
+      ${rows.join("")}
     </div>
   `;
 }
@@ -1021,18 +1155,30 @@ function attachIdeaEvents() {
     event.preventDefault();
     const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
     const formData = new FormData(currentForm);
-    state.ideas.unshift({
+    const existingIdea = state.ideas.find(item => item.id === String(formData.get("ideaId") || "").trim());
+    const target = existingIdea || {
       id: createId("idea"),
+      createdAt: new Date().toISOString().slice(0, 10)
+    };
+    Object.assign(target, {
       title: String(formData.get("title") || "").trim(),
       source: String(formData.get("source") || "").trim(),
       description: String(formData.get("description") || "").trim(),
       angle: String(formData.get("angle") || "").trim(),
       tags: splitCommaList(formData.get("tags")),
       priority: String(formData.get("priority") || "média"),
-      status: String(formData.get("status") || "disponivel"),
-      createdAt: new Date().toISOString().slice(0, 10)
+      status: String(formData.get("status") || "disponivel")
     });
+    if (!existingIdea) {
+      state.ideas.unshift(target);
+    }
+    editingIdeaId = null;
     await persistAndRender();
+  });
+
+  document.querySelector("#cancelIdeaEdit")?.addEventListener("click", () => {
+    editingIdeaId = null;
+    render();
   });
 
   document.querySelectorAll("[data-promote-idea]").forEach(button => {
@@ -1052,6 +1198,26 @@ function attachIdeaEvents() {
       const idea = state.ideas.find(item => item.id === actionButton.dataset.toggleIdeaStatus);
       if (!idea) return;
       idea.status = idea.status === "reaproveitavel" ? "disponivel" : "reaproveitavel";
+      await persistAndRender();
+    });
+  });
+
+  document.querySelectorAll("[data-edit-idea]").forEach(button => {
+    const actionButton = /** @type {HTMLButtonElement} */ (button);
+    actionButton.addEventListener("click", () => {
+      editingIdeaId = actionButton.dataset.editIdea || null;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-delete-idea]").forEach(button => {
+    const actionButton = /** @type {HTMLButtonElement} */ (button);
+    actionButton.addEventListener("click", async () => {
+      const ideaId = actionButton.dataset.deleteIdea;
+      if (!ideaId || !window.confirm("Excluir esta ideia?")) return;
+      state.ideas = state.ideas.filter(item => item.id !== ideaId);
+      state.pieces = state.pieces.map(piece => piece.ideaId === ideaId ? { ...piece, ideaId: null } : piece);
+      if (editingIdeaId === ideaId) editingIdeaId = null;
       await persistAndRender();
     });
   });
@@ -1101,10 +1267,7 @@ function attachPieceEvents() {
       piece.ideaId = String(formData.get("ideaId") || "").trim() || null;
       piece.brief.objective = String(formData.get("objective") || "").trim();
       piece.brief.promise = String(formData.get("promise") || "").trim();
-      piece.brief.owner = String(formData.get("owner") || "").trim();
-      piece.owner = piece.brief.owner;
       piece.due = String(formData.get("due") || "").trim();
-      piece.brief.cta = String(formData.get("cta") || "").trim();
       piece.platforms = getCheckedValues(currentForm, "platforms");
       piece.brief.platforms = [...piece.platforms];
       if (piece.ideaId && piece.ideaId !== previousIdeaId) {
@@ -1119,8 +1282,25 @@ function attachPieceEvents() {
       event.preventDefault();
       const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
       const pieceId = currentForm.dataset.pieceId;
-      const template = String(new FormData(currentForm).get("template") || "storytelling");
+      const structureItemId = String(new FormData(currentForm).get("structureItemId") || "").trim();
+      const template = inferTemplateFromStructureId(structureItemId);
       upsertScriptFromForm(pieceId, template, currentForm);
+      syncSingleLibraryComponent(pieceId, "script_structure", structureItemId, { required: true, used: true });
+      syncMultiLibraryComponents(pieceId, "cta", getCheckedValues(currentForm, "ctaIds"), { required: true, used: true });
+      await persistAndRender();
+    });
+  });
+
+  document.querySelectorAll("[data-script-structure-select]").forEach(select => {
+    const structureSelect = /** @type {HTMLSelectElement} */ (select);
+    structureSelect.addEventListener("change", async () => {
+      const pieceId = structureSelect.dataset.scriptStructureSelect;
+      if (!pieceId) return;
+      const template = inferTemplateFromStructureId(structureSelect.value);
+      const script = getOrCreateScript(pieceId);
+      script.template = template;
+      script.fields = getTemplateDefaults(template);
+      syncSingleLibraryComponent(pieceId, "script_structure", structureSelect.value, { required: true, used: true });
       await persistAndRender();
     });
   });
@@ -1132,10 +1312,9 @@ function attachPieceEvents() {
       const piece = state.pieces.find(item => item.id === currentForm.dataset.pieceId);
       if (!piece) return;
       const formData = new FormData(currentForm);
-      piece.capture.cameraPlan = String(formData.get("cameraPlan") || "").trim();
-      piece.capture.takes = String(formData.get("takes") || "").trim();
-      piece.capture.materials = String(formData.get("materials") || "").trim();
       piece.capture.driveUrl = String(formData.get("driveUrl") || "").trim();
+      const selectedOptions = Array.from(currentForm.querySelectorAll('select[name="cameraAngleIds"] option:checked')).map(option => /** @type {HTMLOptionElement} */ (option).value);
+      syncMultiLibraryComponents(piece.id, "camera_angle", selectedOptions, { required: true, used: true });
       await persistAndRender();
     });
   });
@@ -1147,10 +1326,12 @@ function attachPieceEvents() {
       const piece = state.pieces.find(item => item.id === currentForm.dataset.pieceId);
       if (!piece) return;
       const formData = new FormData(currentForm);
-      piece.edit.musicDirection = String(formData.get("musicDirection") || "").trim();
-      piece.edit.soundDirection = String(formData.get("soundDirection") || "").trim();
-      piece.edit.textHeaders = String(formData.get("textHeaders") || "").trim();
-      piece.edit.notes = String(formData.get("notes") || "").trim();
+      syncSingleLibraryComponent(piece.id, "music", String(formData.get("musicItemId") || "").trim(), { used: Boolean(formData.get("musicItemId")) });
+      syncSingleLibraryComponent(piece.id, "sound_effect", String(formData.get("soundEffectItemId") || "").trim(), { used: Boolean(formData.get("soundEffectItemId")) });
+      const usedHeaderIds = getCheckedValues(currentForm, "usedHeaderIds");
+      getHeaderComponents(piece.id).forEach(component => {
+        component.used = usedHeaderIds.includes(component.id);
+      });
       await persistAndRender();
     });
   });
@@ -1219,7 +1400,9 @@ function attachPieceEvents() {
       if (!piece) return;
       const idea = state.ideas.find(item => item.id === piece.ideaId) || null;
       const script = getOrCreateScript(piece.id);
-      script.fields = buildScriptFromIdea(script.template, piece, idea);
+      script.fields = buildScriptFromIdea(script.template, piece, idea, script.fields);
+      syncSuggestedCtas(piece.id, suggestCtasForObjective(piece.brief.objective));
+      syncSuggestedHeaders(piece.id, buildHeaderSuggestions(script.template, script.fields, piece));
       await persistAndRender();
     });
   });
@@ -1231,6 +1414,36 @@ function attachPieceEvents() {
       if (!piece) return;
       const script = getOrCreateScript(piece.id);
       script.fields = improveScriptFields(script.template, script.fields, piece);
+      syncSuggestedCtas(piece.id, suggestCtasForObjective(piece.brief.objective));
+      syncSuggestedHeaders(piece.id, buildHeaderSuggestions(script.template, script.fields, piece));
+      await persistAndRender();
+    });
+  });
+
+  document.querySelectorAll("[data-delete-piece]").forEach(button => {
+    const deleteButton = /** @type {HTMLButtonElement} */ (button);
+    deleteButton.addEventListener("click", async () => {
+      const pieceId = deleteButton.dataset.deletePiece;
+      if (!pieceId || !window.confirm("Excluir esta peça e os vínculos relacionados?")) return;
+      state.pieces = state.pieces.filter(item => item.id !== pieceId);
+      state.scripts = state.scripts.filter(item => item.pieceId !== pieceId);
+      state.pieceComponents = state.pieceComponents.filter(item => item.pieceId !== pieceId);
+      state.texts = state.texts.filter(item => item.pieceId !== pieceId);
+      state.files = state.files.filter(item => item.pieceId !== pieceId);
+      state.publications = state.publications.filter(item => item.pieceId !== pieceId);
+      if (selectedPieceId === pieceId) {
+        selectedPieceId = state.pieces[0]?.id || null;
+      }
+      await persistAndRender();
+    });
+  });
+
+  document.querySelectorAll("[data-quick-add-library]").forEach(button => {
+    const addButton = /** @type {HTMLButtonElement} */ (button);
+    addButton.addEventListener("click", async () => {
+      const category = addButton.dataset.quickAddLibrary;
+      if (!category) return;
+      await quickAddLibraryItem(category);
       await persistAndRender();
     });
   });
@@ -1243,11 +1456,16 @@ function attachTextEvents() {
     const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
     const formData = new FormData(currentForm);
     const pieceId = String(formData.get("pieceId") || "").trim() || null;
-    const title = String(formData.get("title") || "").trim();
-    const theme = String(formData.get("theme") || "").trim();
     const platforms = getCheckedValues(currentForm, "platforms");
     const piece = state.pieces.find(item => item.id === pieceId) || null;
-    captionDrafts = buildCaptionDrafts({ piece, pieceId, title, theme, platforms });
+    captionDrafts = buildCaptionDrafts({ piece, pieceId, platforms });
+    render();
+  });
+
+  generatorForm?.querySelector('select[name="pieceId"]')?.addEventListener("change", event => {
+    const select = /** @type {HTMLSelectElement} */ (event.currentTarget);
+    selectedPieceId = select.value || null;
+    captionDrafts = [];
     render();
   });
 
@@ -1286,11 +1504,61 @@ function attachTextEvents() {
 }
 
 function attachLibraryEvents() {
+  const libraryForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#libraryForm"));
+  libraryForm?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
+    const formData = new FormData(currentForm);
+    const existing = state.library.find(item => item.id === String(formData.get("libraryItemId") || "").trim());
+    const nextItem = existing || {
+      id: createUuid(),
+      createdAt: new Date().toISOString()
+    };
+    Object.assign(nextItem, {
+      name: String(formData.get("name") || "").trim(),
+      category: String(formData.get("category") || currentLibraryCategory),
+      notes: String(formData.get("notes") || "").trim(),
+      example: String(formData.get("example") || "").trim(),
+      context: splitCommaList(formData.get("context")),
+      platforms: getCheckedValues(currentForm, "platforms")
+    });
+    if (!existing) {
+      state.library.unshift(nextItem);
+    }
+    editingLibraryItemId = null;
+    await persistAndRender();
+  });
+
+  document.querySelector("#cancelLibraryEdit")?.addEventListener("click", () => {
+    editingLibraryItemId = null;
+    render();
+  });
+
   document.querySelectorAll("[data-library-category]").forEach(button => {
     const categoryButton = /** @type {HTMLButtonElement} */ (button);
     categoryButton.addEventListener("click", () => {
       currentLibraryCategory = categoryButton.dataset.libraryCategory || currentLibraryCategory;
       render();
+    });
+  });
+
+  document.querySelectorAll("[data-edit-library]").forEach(button => {
+    const editButton = /** @type {HTMLButtonElement} */ (button);
+    editButton.addEventListener("click", () => {
+      editingLibraryItemId = editButton.dataset.editLibrary || null;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-delete-library]").forEach(button => {
+    const deleteButton = /** @type {HTMLButtonElement} */ (button);
+    deleteButton.addEventListener("click", async () => {
+      const itemId = deleteButton.dataset.deleteLibrary;
+      if (!itemId || !window.confirm("Excluir este item da biblioteca?")) return;
+      state.library = state.library.filter(item => item.id !== itemId);
+      state.pieceComponents = state.pieceComponents.map(component => component.libraryItemId === itemId ? { ...component, libraryItemId: null } : component);
+      if (editingLibraryItemId === itemId) editingLibraryItemId = null;
+      await persistAndRender();
     });
   });
 }
@@ -1383,21 +1651,14 @@ function createPieceFromIdea(idea) {
     brief: {
       objective: "",
       promise: idea.description || idea.angle || "",
-      platforms: ["instagram", "tiktok", "shorts"],
-      cta: "",
-      owner: ""
+      platforms: ["instagram", "tiktok", "shorts"]
     },
     capture: {
-      cameraPlan: "",
-      takes: "",
-      materials: "",
       driveUrl: ""
     },
     edit: {
-      notes: "",
-      musicDirection: "",
-      soundDirection: "",
-      textHeaders: ""
+      headerRecommendation: "",
+      headerSuggestions: []
     },
     distribution: {
       igMediaId: "",
@@ -1428,21 +1689,14 @@ function createBlankPiece() {
     brief: {
       objective: "",
       promise: "",
-      platforms: ["instagram", "tiktok", "shorts"],
-      cta: "",
-      owner: ""
+      platforms: ["instagram", "tiktok", "shorts"]
     },
     capture: {
-      cameraPlan: "",
-      takes: "",
-      materials: "",
       driveUrl: ""
     },
     edit: {
-      notes: "",
-      musicDirection: "",
-      soundDirection: "",
-      textHeaders: ""
+      headerRecommendation: "",
+      headerSuggestions: []
     },
     distribution: {
       igMediaId: "",
@@ -1496,20 +1750,27 @@ function upsertScriptFromForm(pieceId, template, form) {
   script.updatedAt = new Date().toISOString();
 }
 
-function buildScriptFromIdea(template, piece, idea) {
-  const baseText = [piece.title, piece.brief.promise, idea?.description, idea?.angle].filter(Boolean).join(" ");
+function buildScriptFromIdea(template, piece, idea, existingFields = {}) {
+  const baseText = [
+    piece.title,
+    piece.brief.objective,
+    piece.brief.promise,
+    idea?.description,
+    idea?.angle,
+    ...Object.values(existingFields || {})
+  ].filter(Boolean).join(" ");
   if (template === "educacional") {
     return {
-      problema: summarizeText(baseText, 110),
-      solucao: `Mostre uma solução prática ligada a ${piece.title.toLowerCase()}.`,
+      problema: summarizeText(String(existingFields.problema || baseText), 110),
+      solucao: existingFields.solucao || `Mostre uma solução prática ligada a ${piece.title.toLowerCase()}.`,
       prova: "Inclua prova visual, bastidores ou resultado concreto.",
-      cta: piece.brief.cta || "Salve para aplicar depois."
+      cta: "Salve para aplicar depois."
     };
   }
 
   if (template === "tutorial") {
     return {
-      steps: [
+      steps: (existingFields.steps || []).length ? existingFields.steps : [
         `1. Abra com ${piece.title.toLowerCase()}.`,
         "2. Explique o passo principal com exemplo real.",
         "3. Feche com CTA objetivo."
@@ -1542,15 +1803,18 @@ function improveScriptFields(template, fields, piece) {
   return next;
 }
 
-function buildCaptionDrafts({ piece, pieceId, title, theme, platforms }) {
+function buildCaptionDrafts({ piece, pieceId, platforms }) {
   const selectedPlatforms = platforms.length ? platforms : ["instagram", "tiktok", "shorts"];
   const context = assistantGateway.collectCaptionContext(state);
+  const title = piece?.title || "";
+  const theme = getPieceTheme(piece);
+  const scriptSummary = piece ? getScriptSummary(piece.id) : "";
   return selectedPlatforms.map(platform => {
     const rule = platformRules[platform];
     const pieceTitle = piece?.title || "";
     const draft = assistantGateway.improveCaption({
       title,
-      theme,
+      theme: [theme, scriptSummary, piece?.brief.objective].filter(Boolean).join(". "),
       platform,
       pieceTitle,
       rules: rule,
@@ -1566,7 +1830,7 @@ function buildCaptionDrafts({ piece, pieceId, title, theme, platforms }) {
       id: createId("draft"),
       pieceId: pieceId || null,
       platform,
-      title: draft.title,
+      title: draft.title || title,
       body,
       seoTerms: draft.seoTerms,
       hashtags,
@@ -1578,6 +1842,17 @@ function buildCaptionDrafts({ piece, pieceId, title, theme, platforms }) {
 }
 
 function buildLibraryPerformanceRows(category) {
+  if (category === "text_header") {
+    const usedHeaders = state.pieceComponents.filter(item => item.slot === "text_header" && item.used);
+    if (!usedHeaders.length) return [];
+    const metrics = usedHeaders.reduce((acc, component) => addInstagramMetrics(acc, getPieceInstagramMetrics(component.pieceId)), createEmptyMetrics());
+    return [{
+      label: "Headers de texto",
+      count: usedHeaders.length,
+      metrics
+    }];
+  }
+
   const rows = new Map();
   const slot = libraryCategories.find(item => item.id === category)?.slot;
   if (!slot) return [];
@@ -1597,6 +1872,14 @@ function buildLibraryPerformanceRows(category) {
   }
 
   return [...rows.values()].sort((left, right) => right.metrics.views - left.metrics.views);
+}
+
+function getPrimaryComponent(pieceId, slot) {
+  return getPieceComponents(pieceId, slot)[0] || null;
+}
+
+function getHeaderComponents(pieceId) {
+  return getPieceComponents(pieceId, "text_header");
 }
 
 function getPieceComponents(pieceId, slot) {
@@ -1640,18 +1923,79 @@ function isPhaseComplete(piece, phase) {
   }
   if (phase === "roteiro") {
     const script = getScriptByPiece(piece.id);
-    return Boolean(script && hasScriptContent(script));
+    return Boolean(script && hasScriptContent(script) && getPrimaryComponent(piece.id, "script_structure") && getPieceComponents(piece.id, "cta").length);
   }
   if (phase === "captacao") {
-    return Boolean(piece.capture.takes || piece.capture.driveUrl);
+    return Boolean(getPieceComponents(piece.id, "camera_angle").length || piece.capture.driveUrl);
   }
   if (phase === "edicao") {
-    return Boolean(piece.edit.notes || piece.edit.textHeaders || getPieceComponents(piece.id, "music").length);
+    return Boolean(getPrimaryComponent(piece.id, "music") || getPrimaryComponent(piece.id, "sound_effect") || getHeaderComponents(piece.id).some(component => component.used));
   }
   if (phase === "distribuicao") {
     return Boolean(piece.distribution.igMediaId || piece.distribution.permalink || state.texts.some(text => text.pieceId === piece.id));
   }
   return false;
+}
+
+function isLegendasComplete(piece) {
+  return state.texts.some(text => text.pieceId === piece.id);
+}
+
+function getPieceProgress(piece) {
+  const phaseStatus = buildPiecePhaseStatus(piece);
+  return {
+    completed: phaseStatus.filter(item => item.complete).length,
+    total: phaseStatus.length
+  };
+}
+
+function buildPiecePhaseStatus(piece) {
+  return [
+    {
+      key: "brief",
+      label: "Brief",
+      complete: isPhaseComplete(piece, "brief"),
+      warning: false,
+      description: piece.brief.objective ? "Objetivo e promessa definidos." : "Defina objetivo, promessa e plataformas."
+    },
+    {
+      key: "roteiro",
+      label: "Roteiro",
+      complete: isPhaseComplete(piece, "roteiro"),
+      warning: !isPhaseComplete(piece, "roteiro"),
+      description: getMissingRequiredSlots(piece.id).includes("script_structure") || getMissingRequiredSlots(piece.id).includes("cta")
+        ? "Faltam estrutura de roteiro ou CTAs."
+        : "Estrutura, campos e CTAs prontos."
+    },
+    {
+      key: "captacao",
+      label: "Captação",
+      complete: isPhaseComplete(piece, "captacao"),
+      warning: getMissingRequiredSlots(piece.id).includes("camera_angle"),
+      description: getPieceComponents(piece.id, "camera_angle").length ? "Ângulos selecionados." : "Escolha ao menos um ângulo."
+    },
+    {
+      key: "edicao",
+      label: "Edição",
+      complete: isPhaseComplete(piece, "edicao"),
+      warning: false,
+      description: getHeaderComponents(piece.id).some(component => component.used) ? "Headers e edição encaminhados." : "Revise músicas, efeitos e headers."
+    },
+    {
+      key: "distribuicao",
+      label: "Distribuição",
+      complete: isPhaseComplete(piece, "distribuicao"),
+      warning: false,
+      description: piece.distribution.igMediaId || piece.distribution.permalink ? "Mídia real vinculada." : "Vincule `ig_media_id` ou permalink."
+    },
+    {
+      key: "legendas",
+      label: "Legendas",
+      complete: isLegendasComplete(piece),
+      warning: !isLegendasComplete(piece),
+      description: isLegendasComplete(piece) ? "Legendas já geradas." : "Gere as legendas por plataforma."
+    }
+  ];
 }
 
 function hasScriptContent(script) {
@@ -1699,6 +2043,200 @@ function getTemplateDefaults(template) {
     desfecho: "",
     aprendizado: ""
   };
+}
+
+function inferTemplateFromStructureId(structureItemId) {
+  const structure = state.library.find(item => item.id === structureItemId);
+  const token = normalizeToken(`${structure?.name || ""} ${structure?.notes || ""}`);
+  if (token.includes("tutorial")) return "tutorial";
+  if (token.includes("educa")) return "educacional";
+  return "storytelling";
+}
+
+async function quickAddLibraryItem(category) {
+  const name = window.prompt(`Novo item para ${getCategoryLabel(category)}:`);
+  if (!name?.trim()) return null;
+  const item = {
+    id: createUuid(),
+    name: name.trim(),
+    category,
+    context: [],
+    platforms: ["instagram", "tiktok", "shorts"],
+    notes: "",
+    example: "",
+    createdAt: new Date().toISOString()
+  };
+  state.library.unshift(item);
+  return item;
+}
+
+function renderLibrarySingleSelect({ fieldName, category, value, options, placeholder, addLabel, dataset = "" }) {
+  return `
+    <div class="stack mini">
+      <select name="${fieldName}" ${dataset}>
+        <option value="">${escapeHtml(placeholder)}</option>
+        ${options.map(option => `<option value="${option.id}" ${option.id === value ? "selected" : ""}>${escapeHtml(option.name)}</option>`).join("")}
+      </select>
+      <button class="ghost-action compact align-start" type="button" data-quick-add-library="${category}">${escapeHtml(addLabel)}</button>
+    </div>
+  `;
+}
+
+function syncSingleLibraryComponent(pieceId, slot, libraryItemId, overrides = {}) {
+  const current = getPrimaryComponent(pieceId, slot);
+  const nextId = libraryItemId || null;
+  if (!nextId) {
+    state.pieceComponents = state.pieceComponents.filter(component => !(component.pieceId === pieceId && component.slot === slot && component.libraryItemId));
+    return null;
+  }
+
+  if (current) {
+    current.libraryItemId = nextId;
+    current.required = overrides.required ?? current.required;
+    current.used = overrides.used ?? current.used;
+    return current;
+  }
+
+  const component = {
+    id: createId("component"),
+    pieceId,
+    libraryItemId: nextId,
+    slot,
+    required: overrides.required ?? requiredSlots.includes(slot),
+    used: overrides.used ?? false,
+    notes: overrides.notes || "",
+    orderIndex: getPieceComponents(pieceId, slot).length
+  };
+  state.pieceComponents.push(component);
+  return component;
+}
+
+function syncMultiLibraryComponents(pieceId, slot, libraryItemIds, overrides = {}) {
+  const selectedIds = new Set((libraryItemIds || []).filter(Boolean));
+  const current = getPieceComponents(pieceId, slot).filter(component => component.libraryItemId);
+  const keep = [];
+
+  for (const component of current) {
+    if (selectedIds.has(component.libraryItemId)) {
+      component.required = overrides.required ?? component.required;
+      component.used = overrides.used ?? component.used;
+      keep.push(component.libraryItemId);
+    }
+  }
+
+  state.pieceComponents = state.pieceComponents.filter(component => {
+    if (component.pieceId !== pieceId || component.slot !== slot || !component.libraryItemId) return true;
+    return selectedIds.has(component.libraryItemId);
+  });
+
+  [...selectedIds].forEach(libraryItemId => {
+    if (!keep.includes(libraryItemId)) {
+      state.pieceComponents.push({
+        id: createId("component"),
+        pieceId,
+        libraryItemId,
+        slot,
+        required: overrides.required ?? requiredSlots.includes(slot),
+        used: overrides.used ?? false,
+        notes: overrides.notes || "",
+        orderIndex: getPieceComponents(pieceId, slot).length
+      });
+    }
+  });
+}
+
+function syncSuggestedCtas(pieceId, libraryItemIds) {
+  if (!libraryItemIds.length) return;
+  syncMultiLibraryComponents(pieceId, "cta", libraryItemIds, { required: true, used: true });
+}
+
+function syncSuggestedHeaders(pieceId, suggestions) {
+  const current = getHeaderComponents(pieceId);
+  const nextByLabel = new Map(suggestions.map(item => [normalizeToken(item.label), item]));
+
+  current.forEach(component => {
+    const key = normalizeToken(component.notes);
+    if (!nextByLabel.has(key)) {
+      component.used = component.used || false;
+    }
+  });
+
+  suggestions.forEach((suggestion, index) => {
+    const key = normalizeToken(suggestion.label);
+    const existing = current.find(component => normalizeToken(component.notes) === key);
+    if (existing) {
+      existing.notes = suggestion.label;
+      existing.required = false;
+      return;
+    }
+    state.pieceComponents.push({
+      id: createId("component"),
+      pieceId,
+      libraryItemId: null,
+      slot: "text_header",
+      required: false,
+      used: false,
+      notes: suggestion.label,
+      orderIndex: current.length + index
+    });
+  });
+
+  const piece = state.pieces.find(item => item.id === pieceId);
+  if (piece) {
+    piece.edit.headerRecommendation = suggestions.length
+      ? "A peça pode usar headers para reforçar pontos-chave e CTA visual."
+      : "Esta peça pode funcionar bem sem header textual em tela.";
+    piece.edit.headerSuggestions = suggestions.map(item => item.label);
+  }
+}
+
+function suggestCtasForObjective(objective) {
+  const ctaOptions = getLibraryOptionsForSlot("cta");
+  const targets = {
+    "aumentar conexão com público": ["comentar", "compartilhar"],
+    "gerar views": ["curtir", "compartilhar"],
+    "gerar seguidores": ["seguir", "compartilhar"],
+    "educar para venda": ["salvar", "comentar"]
+  }[objective] || ["salvar"];
+
+  return ctaOptions
+    .filter(item => targets.some(target => normalizeToken(item.name).includes(normalizeToken(target))))
+    .map(item => item.id);
+}
+
+function buildHeaderSuggestions(template, fields, piece) {
+  if (template === "storytelling") return [];
+  const suggestions = [];
+  if (template === "educacional") {
+    suggestions.push({ label: `Problema: ${summarizeText(fields.problema || piece.title, 36)}` });
+    suggestions.push({ label: `Solução: ${summarizeText(fields.solucao || piece.brief.promise, 36)}` });
+    suggestions.push({ label: "CTA visual" });
+    return suggestions;
+  }
+
+  const steps = fields.steps || [];
+  steps.slice(0, 3).forEach((step, index) => {
+    suggestions.push({ label: `Passo ${index + 1}` });
+  });
+  if (!suggestions.length) {
+    suggestions.push({ label: "Título animado" });
+  }
+  return suggestions;
+}
+
+function getPieceTheme(piece) {
+  if (!piece) return "";
+  const idea = state.ideas.find(item => item.id === piece.ideaId);
+  return piece.brief.promise || idea?.description || idea?.angle || "";
+}
+
+function getScriptSummary(pieceId) {
+  const script = getScriptByPiece(pieceId);
+  if (!script) return "";
+  if (script.template === "tutorial") {
+    return (script.fields.steps || []).join(" ");
+  }
+  return Object.values(script.fields || {}).filter(Boolean).join(" ");
 }
 
 function renderPlatformCheckbox(name, selectedPlatforms) {
@@ -1753,12 +2291,29 @@ function formatSlotLabel(slot) {
   return slotLabels[slot] || slot;
 }
 
+function getLibraryCategoryForSlot(slot) {
+  return libraryCategories.find(category => category.slot === slot)?.id || "gancho";
+}
+
 function getCategoryLabel(categoryId) {
   return libraryCategories.find(category => category.id === categoryId)?.label || categoryId;
 }
 
 function sanitizeSection(sectionId) {
   return sections.some(section => section.id === sectionId) ? sectionId : "dashboard";
+}
+
+function createUuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, char => {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === "x" ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function normalizeToken(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/^#/, "").trim().toLowerCase();
 }
 
 function splitCommaList(value) {
