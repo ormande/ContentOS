@@ -7,6 +7,7 @@
     "dev": "node server.mjs 4179",
     "start": "node server.mjs 4179",
     "seed": "node src/data/seed.js",
+    "seed:library": "node scripts/seed-library.mjs",
     "typecheck": "tsc --noEmit",
     "check:syntax": "node scripts/check-syntax.mjs",
     "check": "npm run typecheck && npm run check:syntax"

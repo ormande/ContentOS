@@ -1,6 +1,7 @@
 import { isSupabaseConfigured, requireSupabase } from "./supabaseClient.js";
 import { applyLibrarySeedIfEmpty } from "./librarySeed.js";
 import { getTemplateDefaults, normalizeScriptFieldsForTemplate } from "./scriptStructures.js";
+import { linkInstagramMediaToPieces } from "./instagramMediaLinks.js";
 
 const LEGACY_LOCAL_STATE_KEY = "contentos-local-state-v1";
 
@@ -73,7 +74,15 @@ export async function loadState() {
   const legacyState = readLegacyLocalState();
   if (legacyState) {
     try {
-      await syncStateToSupabase(client, reconcileStateLinks(legacyState));
+      const remoteState = await fetchRemoteState(client);
+      const normalized = reconcileStateLinks(legacyState);
+      normalized.library = remoteState.library;
+      normalized.pieceComponents = remapPieceComponentLibraryIds(
+        normalized.pieceComponents,
+        legacyState.library,
+        remoteState.library
+      );
+      await syncStateToSupabase(client, normalized);
       console.info("Cache legado migrado para o Supabase.");
     } catch (error) {
       console.warn("Não foi possível migrar o cache legado.", error);
@@ -189,13 +198,25 @@ async function syncStateToSupabase(client, nextState) {
   await tryRemoteSync(() => upsertRowsById(client, "ideas", nextState.ideas, toIdeaRow), "ideas", syncErrors);
   await tryRemoteSync(() => upsertRowsById(client, "pieces", nextState.pieces, toPieceRow), "pieces", syncErrors);
   await tryRemoteSync(() => upsertRowsById(client, "scripts", nextState.scripts, toScriptRow), "scripts", syncErrors);
-  await tryRemoteSync(() => syncPieceComponents(client, nextState.pieces, nextState.pieceComponents), "piece_components", syncErrors);
+  await tryRemoteSync(() => upsertRows(client, "library", nextState.library.map(toLibraryRow).filter(Boolean), "category,name"), "library", syncErrors);
+  await tryRemoteSync(
+    () => syncPieceComponents(
+      client,
+      nextState.pieces,
+      preparePieceComponentsForSync(nextState.pieceComponents, nextState.library)
+    ),
+    "piece_components",
+    syncErrors
+  );
   await tryRemoteSync(() => upsertRowsById(client, "texts", nextState.texts, toTextRow), "texts", syncErrors);
   await tryRemoteSync(() => upsertRowsById(client, "files", nextState.files, toFileRow), "files", syncErrors);
   await tryRemoteSync(() => upsertRowsById(client, "publications", nextState.publications, toPublicationRow), "publications", syncErrors);
-  await tryRemoteSync(() => upsertRows(client, "library", nextState.library.map(toLibraryRow).filter(Boolean), "category,name"), "library", syncErrors);
   await tryRemoteSync(() => upsertRows(client, "ai_settings", [toAiRow(nextState.ai)]), "ai_settings", syncErrors);
-  await tryRemoteSync(() => syncInstagramMediaLinks(client, nextState.pieces), "instagram_media", syncErrors);
+  await tryRemoteSync(
+    () => linkInstagramMediaToPieces(client, nextState.pieces, nextState.publications),
+    "instagram_media",
+    syncErrors
+  );
 
   if (syncErrors.length) {
     throw new Error(`Falha ao salvar no Supabase: ${syncErrors.join(", ")}.`);
@@ -305,42 +326,13 @@ async function tryRemoteSync(run, label, errors) {
   }
 }
 
-async function syncInstagramMediaLinks(client, pieces) {
-  const { data: mediaRows, error } = await client
-    .from("instagram_media")
-    .select("id, ig_media_id, permalink, piece_id");
-
-  if (error) {
-    console.warn("Não foi possível atualizar os vínculos das mídias do Instagram.", error);
-    return;
+export async function refreshInstagramMediaLinks(pieces, publications = []) {
+  if (!isSupabaseConfigured) {
+    throw new Error("Supabase não configurado.");
   }
 
-  const pieceByMediaId = new Map();
-  const pieceByPermalink = new Map();
-
-  for (const piece of pieces) {
-    const mediaId = normalizeText(piece.distribution?.igMediaId);
-    const permalink = normalizeText(piece.distribution?.permalink);
-    if (mediaId) pieceByMediaId.set(mediaId, piece.id);
-    if (permalink) pieceByPermalink.set(permalink, piece.id);
-  }
-
-  for (const media of mediaRows || []) {
-    const nextPieceId = pieceByMediaId.get(normalizeText(media.ig_media_id))
-      || pieceByPermalink.get(normalizeText(media.permalink))
-      || null;
-
-    if (nextPieceId === (media.piece_id || null)) continue;
-
-    const { error: updateError } = await client
-      .from("instagram_media")
-      .update({ piece_id: nextPieceId })
-      .eq("id", media.id);
-
-    if (updateError) {
-      console.warn(`Não foi possível atualizar o vínculo da mídia ${media.id}.`, updateError);
-    }
-  }
+  const client = requireSupabase();
+  return linkInstagramMediaToPieces(client, pieces, publications);
 }
 
 function fromIdeaRow(row) {
@@ -708,6 +700,35 @@ function isUuid(value) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function libraryIdentityKey(item) {
+  return `${item.category}\0${item.name}`;
+}
+
+function remapPieceComponentLibraryIds(components, legacyLibrary, remoteLibrary) {
+  const legacyById = new Map((legacyLibrary || []).map(item => [item.id, item]));
+  const remoteByKey = new Map((remoteLibrary || []).map(item => [libraryIdentityKey(item), item.id]));
+  const remoteIds = new Set((remoteLibrary || []).map(item => item.id));
+
+  return (components || []).map(component => {
+    if (!component.libraryItemId) return component;
+    if (remoteIds.has(component.libraryItemId)) return component;
+
+    const legacyItem = legacyById.get(component.libraryItemId);
+    if (!legacyItem) return { ...component, libraryItemId: null };
+
+    const remoteId = remoteByKey.get(libraryIdentityKey(legacyItem));
+    return remoteId ? { ...component, libraryItemId: remoteId } : { ...component, libraryItemId: null };
+  });
+}
+
+function preparePieceComponentsForSync(components, library) {
+  const libraryIds = new Set((library || []).map(item => item.id).filter(Boolean));
+  return (components || []).map(component => ({
+    ...component,
+    libraryItemId: libraryIds.has(component.libraryItemId) ? component.libraryItemId : null
+  }));
 }
 
 function readLegacyLocalState() {

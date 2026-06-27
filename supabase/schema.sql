@@ -32,11 +32,22 @@ begin
     'educacional',
     'storytelling',
     'lifestyle',
-    'upbeat'
+    'upbeat',
+    'trend',
+    'ranking',
+    'react',
+    'tutorial',
+    'yapper'
   );
 exception
   when duplicate_object then null;
 end $$;
+
+alter type public.library_context add value if not exists 'trend';
+alter type public.library_context add value if not exists 'ranking';
+alter type public.library_context add value if not exists 'react';
+alter type public.library_context add value if not exists 'tutorial';
+alter type public.library_context add value if not exists 'yapper';
 
 do $$
 begin

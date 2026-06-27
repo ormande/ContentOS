@@ -15,8 +15,11 @@ import {
   deletePieceComponentRemote,
   deletePieceRemote,
   deleteTextsByPieceRemote,
+  refreshInstagramMediaLinks,
   saveState
 } from "./data/store.js";
+import { findInstagramMediaIdForPermalink } from "./data/instagramMediaLinks.js";
+import { normalizePermalinkValue, permalinksMatch } from "./data/permalinkUtils.js";
 import {
   formatScriptFieldValue,
   getStructureFieldDefs,
@@ -1897,10 +1900,30 @@ function attachPieceEvents() {
         }
       }
 
-      piece.distribution.igMediaId = igMediaId;
+      if (!igMediaId && permalink) {
+        const detectedMediaId = findInstagramMediaIdForPermalink(instagramDashboard.contentItems, permalink);
+        if (detectedMediaId) {
+          piece.distribution.igMediaId = detectedMediaId;
+        }
+      }
+
+      piece.distribution.igMediaId = igMediaId || piece.distribution.igMediaId || "";
       piece.distribution.permalink = permalink;
       upsertPublicationForPiece(piece, permalink);
       await persistAndRender({ reloadInstagram: true });
+
+      const linkedItems = getPieceInstagramItems(piece.id);
+      if (permalink && !linkedItems.length) {
+        showTransientNotice(
+          "Vínculo não encontrado",
+          "Salvamos o permalink, mas nenhuma mídia do Instagram bateu com essa URL. Confira se o link é do reel/post correto e clique em Atualizar insights."
+        );
+      } else if (linkedItems.length) {
+        showTransientNotice(
+          "Vínculo confirmado",
+          "Peça associada à mídia do Instagram. Métricas e componentes usados passam a refletir os insights."
+        );
+      }
     });
   });
 
@@ -2234,6 +2257,7 @@ function attachDashboardEvents() {
     render();
     try {
       await syncInstagramInsights();
+      await refreshInstagramMediaLinks(state.pieces, state.publications);
       instagramDashboard = await loadInstagramDashboard();
     } catch (error) {
       console.error(error);
@@ -3088,17 +3112,6 @@ function getPieceInstagramItems(pieceId) {
     if (piece.distribution.permalink && permalinksMatch(item.permalink, piece.distribution.permalink)) return true;
     return false;
   });
-}
-
-function normalizePermalinkValue(value) {
-  return String(value || "").trim();
-}
-
-function permalinksMatch(left, right) {
-  const leftValue = normalizePermalinkValue(left);
-  const rightValue = normalizePermalinkValue(right);
-  if (!leftValue || !rightValue) return false;
-  return leftValue === rightValue || leftValue.replace(/\/$/, "") === rightValue.replace(/\/$/, "");
 }
 
 function findPieceWithDuplicatePermalink(permalink, excludePieceId) {

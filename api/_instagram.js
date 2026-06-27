@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { linkInstagramMediaToPieces } from "../src/data/instagramMediaLinks.js";
 
 const graphVersion = process.env.META_GRAPH_API_VERSION || "v25.0";
 const facebookGraphBaseUrl = `https://graph.facebook.com/${graphVersion}`;
@@ -440,6 +441,8 @@ async function syncInstagramAccount(supabase, account) {
       })
       .eq("id", syncRun.id);
 
+    await relinkInstagramMediaPieces(supabase);
+
     return { mediaSynced, snapshotsCreated };
   } catch (error) {
     await supabase
@@ -634,4 +637,35 @@ function classifyMedia(media) {
   if (media.media_type === "VIDEO") return "video";
   if (media.media_type === "IMAGE") return "post";
   return "unknown";
+}
+
+async function relinkInstagramMediaPieces(supabase) {
+  const [{ data: pieces, error: piecesError }, { data: publications, error: publicationsError }] = await Promise.all([
+    supabase.from("pieces").select("id, distribution"),
+    supabase.from("publications").select("piece_id, url")
+  ]);
+
+  if (piecesError || publicationsError) {
+    console.warn("Não foi possível reler peças para vínculo Instagram.", piecesError || publicationsError);
+    return;
+  }
+
+  const normalizedPieces = (pieces || []).map(row => ({
+    id: row.id,
+    distribution: {
+      igMediaId: row.distribution?.igMediaId || "",
+      permalink: row.distribution?.permalink || ""
+    }
+  }));
+
+  const normalizedPublications = (publications || []).map(row => ({
+    pieceId: row.piece_id,
+    url: row.url || ""
+  }));
+
+  try {
+    await linkInstagramMediaToPieces(supabase, normalizedPieces, normalizedPublications);
+  } catch (error) {
+    console.warn("Não foi possível atualizar vínculos Instagram após sync.", error);
+  }
 }
