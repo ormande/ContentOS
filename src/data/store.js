@@ -2,7 +2,7 @@ import { isSupabaseConfigured, requireSupabase } from "./supabaseClient.js";
 import { applyLibrarySeedIfEmpty } from "./librarySeed.js";
 import { getTemplateDefaults, normalizeScriptFieldsForTemplate } from "./scriptStructures.js";
 
-const LOCAL_STATE_KEY = "contentos-local-state-v1";
+const LEGACY_LOCAL_STATE_KEY = "contentos-local-state-v1";
 
 const emptyState = {
   ideas: [],
@@ -65,140 +65,35 @@ export function createEmptyState() {
 }
 
 export async function loadState() {
-  const localState = loadLocalState();
-
   if (!isSupabaseConfigured) {
-    console.warn("Supabase não configurado. Usando estado vazio temporário.");
-    return finalizeLoadedState(localState || createEmptyState());
+    throw new Error("Supabase não configurado. Confira SUPABASE_URL e SUPABASE_ANON_KEY no ambiente.");
   }
 
   const client = requireSupabase();
-  try {
-    const remoteState = await fetchRemoteState(client);
-
-    if (localState && shouldPreferLocalState(localState, remoteState)) {
-      return finalizeLoadedState(reconcileStateLinks(localState));
+  const legacyState = readLegacyLocalState();
+  if (legacyState) {
+    try {
+      await syncStateToSupabase(client, reconcileStateLinks(legacyState));
+      console.info("Cache legado migrado para o Supabase.");
+    } catch (error) {
+      console.warn("Não foi possível migrar o cache legado.", error);
+    } finally {
+      clearLegacyLocalCache();
     }
-
-    return finalizeLoadedState(remoteState);
-  } catch (error) {
-    console.warn("Falha ao carregar do Supabase. Usando cache local.", error);
-    return finalizeLoadedState(localState || createEmptyState());
-  }
-}
-
-export async function mergeLocalStateToSupabase(localState) {
-  if (!isSupabaseConfigured) {
-    throw new Error("Supabase não configurado.");
   }
 
-  const client = requireSupabase();
-  const normalizedLocal = reconcileStateLinks(localState);
   const remoteState = await fetchRemoteState(client);
-
-  const upserted = {
-    ideas: await upsertLocalRows(client, "ideas", normalizedLocal.ideas, remoteState.ideas, toIdeaRow),
-    pieces: await upsertLocalRows(client, "pieces", normalizedLocal.pieces, remoteState.pieces, toPieceRow),
-    scripts: await upsertLocalRows(client, "scripts", normalizedLocal.scripts, remoteState.scripts, toScriptRow),
-    piece_components: await upsertLocalRows(client, "piece_components", normalizedLocal.pieceComponents, remoteState.pieceComponents, toPieceComponentRow),
-    texts: await upsertLocalRows(client, "texts", normalizedLocal.texts, remoteState.texts, toTextRow),
-    files: await upsertLocalRows(client, "files", normalizedLocal.files, remoteState.files, toFileRow),
-    publications: await upsertLocalRows(client, "publications", normalizedLocal.publications, remoteState.publications, toPublicationRow),
-    library: await upsertLocalLibraryRows(client, normalizedLocal.library, remoteState.library)
-  };
-
-  const freshRemote = await fetchRemoteState(client);
-  const mergedState = mergeRemoteWithLocal(freshRemote, normalizedLocal);
-  saveLocalState(mergedState);
-  await syncInstagramMediaLinks(client, mergedState.pieces);
-
-  const insertedTotal = Object.values(upserted).reduce((sum, item) => sum + item.inserted, 0);
-  const updatedTotal = Object.values(upserted).reduce((sum, item) => sum + item.updated, 0);
-
-  return {
-    state: mergedState,
-    upserted,
-    insertedTotal,
-    updatedTotal,
-    syncedTotal: insertedTotal + updatedTotal
-  };
+  return finalizeLoadedState(remoteState);
 }
 
-function mergeRemoteWithLocal(remoteState, localState) {
-  return reconcileStateLinks({
-    ideas: mergeEntitiesById(remoteState.ideas, localState.ideas),
-    pieces: mergeEntitiesById(remoteState.pieces, localState.pieces),
-    scripts: mergeEntitiesById(remoteState.scripts, localState.scripts),
-    pieceComponents: mergeEntitiesById(remoteState.pieceComponents, localState.pieceComponents),
-    texts: mergeEntitiesById(remoteState.texts, localState.texts),
-    files: mergeEntitiesById(remoteState.files, localState.files),
-    publications: mergeEntitiesById(remoteState.publications, localState.publications),
-    library: mergeLibraryByRemotePriority(remoteState.library, localState.library),
-    ai: remoteState.ai || localState.ai
-  });
-}
-
-function mergeEntitiesById(remoteItems, localItems) {
-  const merged = new Map((remoteItems || []).map(item => [item.id, item]));
-  for (const item of localItems || []) {
-    if (item?.id) {
-      merged.set(item.id, item);
-    }
-  }
-  return [...merged.values()];
-}
-
-function mergeLibraryByRemotePriority(remoteItems, localItems) {
-  const merged = new Map((remoteItems || []).map(item => [item.id, item]));
-  const remoteKeys = new Set((remoteItems || []).map(item => libraryIdentityKey(item)));
-
-  for (const item of localItems || []) {
-    if (!item?.id) continue;
-    if (!merged.has(item.id) && remoteKeys.has(libraryIdentityKey(item))) continue;
-    merged.set(item.id, item);
+export async function reloadStateFromSupabase() {
+  if (!isSupabaseConfigured) {
+    throw new Error("Supabase não configurado. Confira SUPABASE_URL e SUPABASE_ANON_KEY no ambiente.");
   }
 
-  return [...merged.values()];
-}
-
-function libraryIdentityKey(item) {
-  return `${item.category}\0${item.name}`;
-}
-
-async function upsertLocalRows(client, table, localItems, remoteItems, toRow) {
-  const remoteIds = new Set((remoteItems || []).map(item => item.id));
-  const rows = (localItems || []).map(toRow).filter(Boolean);
-  if (!rows.length) return { inserted: 0, updated: 0 };
-
-  const inserted = rows.filter(row => !remoteIds.has(row.id)).length;
-  const updated = rows.length - inserted;
-  const { error } = await client.from(table).upsert(rows, { onConflict: "id" });
-  if (error) throw error;
-  return { inserted, updated };
-}
-
-async function upsertLocalLibraryRows(client, localItems, remoteItems) {
-  const remoteIds = new Set((remoteItems || []).map(item => item.id));
-  const remoteKeys = new Set((remoteItems || []).map(item => libraryIdentityKey(item)));
-  const rows = [];
-  let inserted = 0;
-  let updated = 0;
-
-  for (const item of localItems || []) {
-    if (!item?.id) continue;
-    if (!remoteIds.has(item.id) && remoteKeys.has(libraryIdentityKey(item))) continue;
-    const row = toLibraryRow(item);
-    if (!row) continue;
-    if (remoteIds.has(item.id)) updated += 1;
-    else inserted += 1;
-    rows.push(row);
-  }
-
-  if (!rows.length) return { inserted: 0, updated: 0 };
-
-  const { error } = await client.from("library").upsert(rows, { onConflict: "id" });
-  if (error) throw error;
-  return { inserted, updated };
+  const client = requireSupabase();
+  const remoteState = await fetchRemoteState(client);
+  return finalizeLoadedState(remoteState);
 }
 
 async function upsertRowsById(client, table, items, toRow) {
@@ -280,15 +175,15 @@ function finalizeLoadedState(state) {
 }
 
 export async function saveState(state) {
-  const nextState = reconcileStateLinks(state);
-  saveLocalState(nextState);
-
   if (!isSupabaseConfigured) {
-    console.warn("Supabase não configurado. Alterações mantidas apenas em memória.");
-    return;
+    throw new Error("Supabase não configurado. Confira SUPABASE_URL e SUPABASE_ANON_KEY no ambiente.");
   }
 
   const client = requireSupabase();
+  await syncStateToSupabase(client, reconcileStateLinks(state));
+}
+
+async function syncStateToSupabase(client, nextState) {
   const syncErrors = [];
 
   await tryRemoteSync(() => upsertRowsById(client, "ideas", nextState.ideas, toIdeaRow), "ideas", syncErrors);
@@ -303,7 +198,7 @@ export async function saveState(state) {
   await tryRemoteSync(() => syncInstagramMediaLinks(client, nextState.pieces), "instagram_media", syncErrors);
 
   if (syncErrors.length) {
-    throw new Error(`Parte do salvamento remoto falhou: ${syncErrors.join(", ")}. Os dados ficaram no cache local deste navegador.`);
+    throw new Error(`Falha ao salvar no Supabase: ${syncErrors.join(", ")}.`);
   }
 }
 
@@ -815,63 +710,34 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function loadLocalState() {
+function readLegacyLocalState() {
   try {
-    const raw = globalThis.localStorage?.getItem(LOCAL_STATE_KEY);
+    const raw = globalThis.localStorage?.getItem(LEGACY_LOCAL_STATE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    const hasContent = Boolean(
+      parsed?.ideas?.length
+      || parsed?.pieces?.length
+      || parsed?.scripts?.length
+      || parsed?.pieceComponents?.length
+      || parsed?.texts?.length
+      || parsed?.files?.length
+      || parsed?.publications?.length
+      || parsed?.library?.length
+    );
+    return hasContent ? parsed : null;
   } catch (error) {
-    console.warn("Não foi possível ler o cache local do ContentOS.", error);
+    console.warn("Não foi possível ler o cache legado do ContentOS.", error);
     return null;
   }
 }
 
-function saveLocalState(state) {
-  if (!hasMeaningfulContent(state)) {
-    console.warn("saveLocalState: estado sem conteúdo — abortando para não sobrescrever cache local.");
-    return;
-  }
-
+function clearLegacyLocalCache() {
   try {
-    globalThis.localStorage?.setItem(LOCAL_STATE_KEY, JSON.stringify({
-      ...state,
-      __savedAt: new Date().toISOString()
-    }));
+    globalThis.localStorage?.removeItem(LEGACY_LOCAL_STATE_KEY);
   } catch (error) {
-    console.warn("Não foi possível salvar o cache local do ContentOS.", error);
+    console.warn("Não foi possível limpar o cache legado do ContentOS.", error);
   }
-}
-
-function shouldPreferLocalState(localState, remoteState) {
-  if (!hasMeaningfulContent(remoteState) && hasMeaningfulContent(localState)) return true;
-
-  const localSavedAt = Date.parse(localState?.__savedAt || "") || 0;
-  const remoteSavedAt = Math.max(
-    ...[
-      ...remoteState.ideas.map(item => Date.parse(item.createdAt || "") || 0),
-      ...remoteState.pieces.map(item => Date.parse(item.updatedAt || "") || 0),
-      ...remoteState.scripts.map(item => Date.parse(item.updatedAt || "") || 0),
-      ...remoteState.texts.map(item => Date.parse(item.updatedAt || "") || 0),
-      ...remoteState.files.map(item => Date.parse(item.updatedAt || "") || 0),
-      ...remoteState.library.map(item => Date.parse(item.createdAt || "") || 0)
-    ],
-    0
-  );
-
-  return localSavedAt > remoteSavedAt;
-}
-
-function hasMeaningfulContent(state) {
-  return Boolean(
-    state?.ideas?.length
-    || state?.pieces?.length
-    || state?.scripts?.length
-    || state?.pieceComponents?.length
-    || state?.texts?.length
-    || state?.files?.length
-    || state?.publications?.length
-    || state?.library?.length
-  );
 }
 
 function consolidateTexts(texts) {

@@ -7,9 +7,9 @@ import {
   getTemplateDefaults,
   ideaStatuses,
   loadState,
+  reloadStateFromSupabase,
   pieceComponentSlots,
   platformRules,
-  mergeLocalStateToSupabase,
   deleteIdeaRemote,
   deleteLibraryItemRemote,
   deletePieceComponentRemote,
@@ -126,7 +126,7 @@ let instagramDatePreset = "30d";
 let instagramCustomStart = "";
 let instagramCustomEnd = "";
 let isInstagramSyncing = false;
-let isMergingLocalCache = false;
+let isReloadingState = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
 let captionDraft = null;
 let expandedCaptionPieceId = null;
@@ -175,7 +175,8 @@ async function init() {
     selectedPieceId ||= state.pieces[0]?.id || null;
   } catch (error) {
     console.error(error);
-    contentArea.innerHTML = `<div class="empty-state"><strong>Não foi possível carregar o Supabase.</strong><span>Confira o schema e as variáveis do ambiente.</span></div>`;
+    const message = error instanceof Error ? error.message : "Erro desconhecido.";
+    contentArea.innerHTML = `<div class="empty-state"><strong>Não foi possível carregar os dados.</strong><span>${escapeHtml(message)} Verifique as variáveis SUPABASE_URL e SUPABASE_ANON_KEY (local: .env · produção: Vercel).</span></div>`;
     return;
   }
 
@@ -1371,14 +1372,14 @@ function renderDashboard(query) {
         <div class="dashboard-actions">
           ${instagramDashboard.account ? "" : `<a class="ghost-action dashboard-connect" href="/api/instagram/connect">Conectar Instagram</a>`}
           <button
-            class="icon-action ${isMergingLocalCache ? "is-spinning" : ""}"
+            class="icon-action ${isReloadingState ? "is-spinning" : ""}"
             type="button"
-            data-merge-local-cache
-            aria-label="Enviar cache local ao Supabase"
-            title="Envia ao Supabase o cache local: novos itens e edições. Nada é apagado do banco."
-            ${isMergingLocalCache ? "disabled" : ""}
+            data-reload-state
+            aria-label="Recarregar dados do Supabase"
+            title="Recarrega ideias, peças, biblioteca e demais dados do banco."
+            ${isReloadingState ? "disabled" : ""}
           >${icon("refresh")}</button>
-          <button class="primary-action" type="button" data-sync-instagram ${isInstagramSyncing || isMergingLocalCache ? "disabled" : ""}>${isInstagramSyncing ? "Sincronizando..." : "Atualizar insights"}</button>
+          <button class="primary-action" type="button" data-sync-instagram ${isInstagramSyncing || isReloadingState ? "disabled" : ""}>${isInstagramSyncing ? "Sincronizando..." : "Atualizar insights"}</button>
         </div>
       </div>
 
@@ -2242,30 +2243,23 @@ function attachDashboardEvents() {
     }
   });
 
-  const mergeButton = /** @type {HTMLButtonElement | null} */ (document.querySelector("[data-merge-local-cache]"));
-  mergeButton?.addEventListener("click", async () => {
-    isMergingLocalCache = true;
+  const reloadButton = /** @type {HTMLButtonElement | null} */ (document.querySelector("[data-reload-state]"));
+  reloadButton?.addEventListener("click", async () => {
+    isReloadingState = true;
     render();
     try {
       const previousPieceId = selectedPieceId;
-      const result = await mergeLocalStateToSupabase(state);
-      state = result.state;
+      state = await reloadStateFromSupabase();
       selectedPieceId = state.pieces.some(piece => piece.id === previousPieceId)
         ? previousPieceId
         : state.pieces[0]?.id || null;
-
-      const parts = [];
-      if (result.insertedTotal) parts.push(`${result.insertedTotal} novo(s)`);
-      if (result.updatedTotal) parts.push(`${result.updatedTotal} atualizado(s)`);
-      const message = parts.length
-        ? `${parts.join(" e ")} enviado(s) ao Supabase. Nada foi apagado do banco.`
-        : "Nenhuma alteração pendente. O cache local foi alinhado com o Supabase.";
-      contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>Cache sincronizado.</strong><span>${escapeHtml(message)}</span></div>`);
+      instagramDashboard = await loadInstagramDashboard();
+      contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>Dados recarregados.</strong><span>Estado atualizado a partir do Supabase.</span></div>`);
     } catch (error) {
       console.error(error);
-      contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>Não foi possível enviar o cache ao Supabase.</strong><span>${escapeHtml(error.message || "Verifique a conexão e tente novamente.")}</span></div>`);
+      contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>Não foi possível recarregar os dados.</strong><span>${escapeHtml(error instanceof Error ? error.message : "Verifique a conexão e tente novamente.")}</span></div>`);
     } finally {
-      isMergingLocalCache = false;
+      isReloadingState = false;
       render();
     }
   });

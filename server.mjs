@@ -49,7 +49,7 @@ const server = createServer((request, response) => {
 async function handleRequest(request, response) {
   const parsedUrl = new URL(request.url, `http://localhost:${port}`);
 
-  if (parsedUrl.pathname === "/contentos-config.js") {
+  if (parsedUrl.pathname === "/contentos-config.js" || parsedUrl.pathname === "/api/contentos-config.js") {
     response.writeHead(200, {
       "Content-Type": "text/javascript; charset=utf-8",
       "Cache-Control": "no-store"
