@@ -137,6 +137,7 @@ let expandedCaptionPieceId = null;
 let captionPlatformTabs = {};
 let editingIdeaId = null;
 let editingLibraryItemId = null;
+let libraryFormOpen = false;
 let pendingLibrarySelection = null;
 let skipPieceFormPhases = new Set();
 let aiDrafts = {
@@ -1173,9 +1174,9 @@ function renderLibrary(query) {
             <h3>Estruturas fixas do piloto</h3>
             <p>As estruturas de roteiro são pré-definidas. Escolha uma delas no Montador; não é possível criar novas nesta fase.</p>
           </section>
-        ` : `
+        ` : (libraryFormOpen || editingLibraryItem ? `
         <form class="panel stack" id="libraryForm">
-          <h3>${editingLibraryItem ? "Editar item da biblioteca" : "Novo item da biblioteca"}</h3>
+          <h3>${editingLibraryItem ? "Editar item da biblioteca" : `Novo ${escapeHtml(getCategoryLabel(currentLibraryCategory))}`}</h3>
           <input type="hidden" name="libraryItemId" value="${escapeHtml(editingLibraryItem?.id || "")}" />
           <input type="hidden" name="category" value="${escapeHtml(currentLibraryCategory)}" />
           ${renderField("Nome", `<input name="name" value="${escapeHtml(editingLibraryItem?.name || "")}" required />`, { required: true })}
@@ -1185,10 +1186,14 @@ function renderLibrary(query) {
           ${renderField("Plataformas", `<div class="checkbox-grid">${renderPlatformCheckbox("platforms", editingLibraryItem?.platforms || ["instagram", "tiktok", "shorts"])}</div>`)}
           <div class="inline-actions">
             <button class="primary-action" type="submit">${editingLibraryItem ? "Salvar alterações" : "Salvar item"}</button>
-            ${editingLibraryItem ? `<button class="ghost-action compact" type="button" id="cancelLibraryEdit">Cancelar</button>` : ""}
+            <button class="ghost-action compact" type="button" id="cancelLibraryEdit">Cancelar</button>
           </div>
         </form>
-        `}
+        ` : `
+        <div class="panel library-add-trigger">
+          <button class="primary-action" type="button" data-open-library-form>Adicionar ${escapeHtml(getCategoryLabel(currentLibraryCategory))}</button>
+        </div>
+        `)}
 
         <section class="panel">
           <h3>${escapeHtml(getCategoryLabel(currentLibraryCategory))}</h3>
@@ -1375,7 +1380,7 @@ function renderDashboard(query) {
         <div class="dashboard-actions">
           ${instagramDashboard.account ? "" : `<a class="ghost-action dashboard-connect" href="/api/instagram/connect">Conectar Instagram</a>`}
           <button
-            class="icon-action ${isReloadingState ? "is-spinning" : ""}"
+            class="icon-action dashboard-reload-action ${isReloadingState ? "is-spinning" : ""}"
             type="button"
             data-reload-state
             aria-label="Recarregar dados do Supabase"
@@ -1770,6 +1775,7 @@ function attachPieceEvents() {
       if (piece.ideaId && piece.ideaId !== previousIdeaId) {
         setIdeaStatus(piece.ideaId, "em_producao");
       }
+      releaseIdeaIfUnused(previousIdeaId !== piece.ideaId ? previousIdeaId : null);
       await persistAndRender();
     });
   });
@@ -2016,12 +2022,14 @@ function attachPieceEvents() {
       });
       if (!confirmed) return;
       if (!(await runRemoteDelete(() => deletePieceRemote(pieceId)))) return;
+      const removedPiece = state.pieces.find(item => item.id === pieceId);
       state.pieces = state.pieces.filter(item => item.id !== pieceId);
       state.scripts = state.scripts.filter(item => item.pieceId !== pieceId);
       state.pieceComponents = state.pieceComponents.filter(item => item.pieceId !== pieceId);
       state.texts = state.texts.filter(item => item.pieceId !== pieceId);
       state.files = state.files.filter(item => item.pieceId !== pieceId);
       state.publications = state.publications.filter(item => item.pieceId !== pieceId);
+      releaseIdeaIfUnused(removedPiece?.ideaId);
       if (selectedPieceId === pieceId) {
         selectedPieceId = state.pieces[0]?.id || null;
       }
@@ -2170,10 +2178,18 @@ function attachLibraryEvents() {
       state.library.unshift(nextItem);
     }
     editingLibraryItemId = null;
+    libraryFormOpen = false;
     await persistAndRender();
   });
 
   document.querySelector("#cancelLibraryEdit")?.addEventListener("click", () => {
+    editingLibraryItemId = null;
+    libraryFormOpen = false;
+    render();
+  });
+
+  document.querySelector("[data-open-library-form]")?.addEventListener("click", () => {
+    libraryFormOpen = true;
     editingLibraryItemId = null;
     render();
   });
@@ -2182,6 +2198,8 @@ function attachLibraryEvents() {
     const categoryButton = /** @type {HTMLButtonElement} */ (button);
     categoryButton.addEventListener("click", () => {
       currentLibraryCategory = categoryButton.dataset.libraryCategory || currentLibraryCategory;
+      libraryFormOpen = false;
+      editingLibraryItemId = null;
       render();
     });
   });
@@ -2190,6 +2208,7 @@ function attachLibraryEvents() {
     const editButton = /** @type {HTMLButtonElement} */ (button);
     editButton.addEventListener("click", () => {
       editingLibraryItemId = editButton.dataset.editLibrary || null;
+      libraryFormOpen = true;
       render();
     });
   });
@@ -2209,7 +2228,10 @@ function attachLibraryEvents() {
       if (!(await runRemoteDelete(() => deleteLibraryItemRemote(itemId)))) return;
       state.library = state.library.filter(item => item.id !== itemId);
       state.pieceComponents = state.pieceComponents.map(component => component.libraryItemId === itemId ? { ...component, libraryItemId: null } : component);
-      if (editingLibraryItemId === itemId) editingLibraryItemId = null;
+      if (editingLibraryItemId === itemId) {
+        editingLibraryItemId = null;
+        libraryFormOpen = false;
+      }
       await persistAndRender();
     });
   });
@@ -3759,6 +3781,16 @@ function setIdeaStatus(ideaId, status) {
   const idea = state.ideas.find(item => item.id === ideaId);
   if (idea && ideaStatuses.includes(status)) {
     idea.status = status;
+  }
+}
+
+function releaseIdeaIfUnused(ideaId) {
+  if (!ideaId) return;
+  const idea = state.ideas.find(item => item.id === ideaId);
+  if (!idea) return;
+  const stillLinked = state.pieces.some(piece => piece.ideaId === ideaId);
+  if (!stillLinked && idea.status === "em_producao") {
+    idea.status = "disponivel";
   }
 }
 

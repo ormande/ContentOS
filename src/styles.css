@@ -696,10 +696,20 @@ textarea {
 }
 
 .ideas-form {
-  position: static;
+  position: relative;
+  z-index: 2;
   overflow: visible;
   display: grid;
   gap: 20px;
+}
+
+.ideas-form:has(.dropdown-field.open) {
+  z-index: 30;
+}
+
+.ideas-table {
+  position: relative;
+  z-index: 1;
 }
 
 .ideas-form h3 {
@@ -1600,6 +1610,13 @@ mark {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.dashboard-actions .icon-action.dashboard-reload-action {
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
 }
 
 .date-filter {
@@ -1956,6 +1973,11 @@ mark {
 
 .empty-state.compact {
   min-height: 120px;
+}
+
+.library-add-trigger {
+  display: flex;
+  align-items: center;
 }
 
 .library-layout {
