@@ -74,39 +74,7 @@ export async function loadState() {
 
   const client = requireSupabase();
   try {
-    const [
-      ideas,
-      pieces,
-      scripts,
-      pieceComponents,
-      texts,
-      files,
-      publications,
-      library,
-      aiSettings
-    ] = await Promise.all([
-      selectAll(client, "ideas", "created_at", { ascending: false }),
-      selectAllSafe(client, "pieces", "updated_at", { ascending: false }, []),
-      selectAllSafe(client, "scripts", "updated_at", { ascending: false }, []),
-      selectAllSafe(client, "piece_components", "order_index", { ascending: true }, []),
-      selectAll(client, "texts", "updated_at", { ascending: false }),
-      selectAll(client, "files", "updated_at", { ascending: false }),
-      selectAll(client, "publications", "published_at", { ascending: false }),
-      selectAll(client, "library", "created_at", { ascending: false }),
-      selectAiSettingsSafe(client)
-    ]);
-
-    const remoteState = reconcileStateLinks({
-      ideas: ideas.map(fromIdeaRow),
-      pieces: pieces.map(fromPieceRow),
-      scripts: scripts.map(fromScriptRow),
-      pieceComponents: pieceComponents.map(fromPieceComponentRow),
-      texts: texts.map(fromTextRow),
-      files: files.map(fromFileRow),
-      publications: publications.map(fromPublicationRow),
-      library: library.map(fromLibraryRow),
-      ai: fromAiRow(aiSettings?.data)
-    });
+    const remoteState = await fetchRemoteState(client);
 
     if (localState && shouldPreferLocalState(localState, remoteState)) {
       return finalizeLoadedState(reconcileStateLinks(localState));
@@ -117,6 +85,190 @@ export async function loadState() {
     console.warn("Falha ao carregar do Supabase. Usando cache local.", error);
     return finalizeLoadedState(localState || createEmptyState());
   }
+}
+
+export async function mergeLocalStateToSupabase(localState) {
+  if (!isSupabaseConfigured) {
+    throw new Error("Supabase não configurado.");
+  }
+
+  const client = requireSupabase();
+  const normalizedLocal = reconcileStateLinks(localState);
+  const remoteState = await fetchRemoteState(client);
+
+  const upserted = {
+    ideas: await upsertLocalRows(client, "ideas", normalizedLocal.ideas, remoteState.ideas, toIdeaRow),
+    pieces: await upsertLocalRows(client, "pieces", normalizedLocal.pieces, remoteState.pieces, toPieceRow),
+    scripts: await upsertLocalRows(client, "scripts", normalizedLocal.scripts, remoteState.scripts, toScriptRow),
+    piece_components: await upsertLocalRows(client, "piece_components", normalizedLocal.pieceComponents, remoteState.pieceComponents, toPieceComponentRow),
+    texts: await upsertLocalRows(client, "texts", normalizedLocal.texts, remoteState.texts, toTextRow),
+    files: await upsertLocalRows(client, "files", normalizedLocal.files, remoteState.files, toFileRow),
+    publications: await upsertLocalRows(client, "publications", normalizedLocal.publications, remoteState.publications, toPublicationRow),
+    library: await upsertLocalLibraryRows(client, normalizedLocal.library, remoteState.library)
+  };
+
+  const freshRemote = await fetchRemoteState(client);
+  const mergedState = mergeRemoteWithLocal(freshRemote, normalizedLocal);
+  saveLocalState(mergedState);
+  await syncInstagramMediaLinks(client, mergedState.pieces);
+
+  const insertedTotal = Object.values(upserted).reduce((sum, item) => sum + item.inserted, 0);
+  const updatedTotal = Object.values(upserted).reduce((sum, item) => sum + item.updated, 0);
+
+  return {
+    state: mergedState,
+    upserted,
+    insertedTotal,
+    updatedTotal,
+    syncedTotal: insertedTotal + updatedTotal
+  };
+}
+
+function mergeRemoteWithLocal(remoteState, localState) {
+  return reconcileStateLinks({
+    ideas: mergeEntitiesById(remoteState.ideas, localState.ideas),
+    pieces: mergeEntitiesById(remoteState.pieces, localState.pieces),
+    scripts: mergeEntitiesById(remoteState.scripts, localState.scripts),
+    pieceComponents: mergeEntitiesById(remoteState.pieceComponents, localState.pieceComponents),
+    texts: mergeEntitiesById(remoteState.texts, localState.texts),
+    files: mergeEntitiesById(remoteState.files, localState.files),
+    publications: mergeEntitiesById(remoteState.publications, localState.publications),
+    library: mergeLibraryByRemotePriority(remoteState.library, localState.library),
+    ai: remoteState.ai || localState.ai
+  });
+}
+
+function mergeEntitiesById(remoteItems, localItems) {
+  const merged = new Map((remoteItems || []).map(item => [item.id, item]));
+  for (const item of localItems || []) {
+    if (item?.id) {
+      merged.set(item.id, item);
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeLibraryByRemotePriority(remoteItems, localItems) {
+  const merged = new Map((remoteItems || []).map(item => [item.id, item]));
+  const remoteKeys = new Set((remoteItems || []).map(item => libraryIdentityKey(item)));
+
+  for (const item of localItems || []) {
+    if (!item?.id) continue;
+    if (!merged.has(item.id) && remoteKeys.has(libraryIdentityKey(item))) continue;
+    merged.set(item.id, item);
+  }
+
+  return [...merged.values()];
+}
+
+function libraryIdentityKey(item) {
+  return `${item.category}\0${item.name}`;
+}
+
+async function upsertLocalRows(client, table, localItems, remoteItems, toRow) {
+  const remoteIds = new Set((remoteItems || []).map(item => item.id));
+  const rows = (localItems || []).map(toRow).filter(Boolean);
+  if (!rows.length) return { inserted: 0, updated: 0 };
+
+  const inserted = rows.filter(row => !remoteIds.has(row.id)).length;
+  const updated = rows.length - inserted;
+  const { error } = await client.from(table).upsert(rows, { onConflict: "id" });
+  if (error) throw error;
+  return { inserted, updated };
+}
+
+async function upsertLocalLibraryRows(client, localItems, remoteItems) {
+  const remoteIds = new Set((remoteItems || []).map(item => item.id));
+  const remoteKeys = new Set((remoteItems || []).map(item => libraryIdentityKey(item)));
+  const rows = [];
+  let inserted = 0;
+  let updated = 0;
+
+  for (const item of localItems || []) {
+    if (!item?.id) continue;
+    if (!remoteIds.has(item.id) && remoteKeys.has(libraryIdentityKey(item))) continue;
+    const row = toLibraryRow(item);
+    if (!row) continue;
+    if (remoteIds.has(item.id)) updated += 1;
+    else inserted += 1;
+    rows.push(row);
+  }
+
+  if (!rows.length) return { inserted: 0, updated: 0 };
+
+  const { error } = await client.from("library").upsert(rows, { onConflict: "id" });
+  if (error) throw error;
+  return { inserted, updated };
+}
+
+async function upsertRowsById(client, table, items, toRow) {
+  const rows = (items || []).map(toRow).filter(Boolean);
+  if (!rows.length) return;
+  const { error } = await client.from(table).upsert(rows, { onConflict: "id" });
+  if (error) throw error;
+}
+
+async function syncPieceComponents(client, pieces, components) {
+  const rows = (components || []).map(toPieceComponentRow).filter(Boolean);
+  if (rows.length) {
+    const { error } = await client.from("piece_components").upsert(rows, { onConflict: "id" });
+    if (error) throw error;
+  }
+
+  const managedPieceIds = (pieces || []).map(piece => piece.id).filter(Boolean);
+  if (!managedPieceIds.length) return;
+
+  const localIds = new Set((components || []).map(component => component.id));
+  const { data: remoteRows, error: selectError } = await client
+    .from("piece_components")
+    .select("id, piece_id")
+    .in("piece_id", managedPieceIds);
+  if (selectError) throw selectError;
+
+  const idsToDelete = (remoteRows || [])
+    .filter(row => !localIds.has(row.id))
+    .map(row => row.id);
+
+  if (!idsToDelete.length) return;
+
+  const { error } = await client.from("piece_components").delete().in("id", idsToDelete);
+  if (error) throw error;
+}
+
+async function fetchRemoteState(client) {
+  const [
+    ideas,
+    pieces,
+    scripts,
+    pieceComponents,
+    texts,
+    files,
+    publications,
+    library,
+    aiSettings
+  ] = await Promise.all([
+    selectAll(client, "ideas", "created_at", { ascending: false }),
+    selectAllSafe(client, "pieces", "updated_at", { ascending: false }, []),
+    selectAllSafe(client, "scripts", "updated_at", { ascending: false }, []),
+    selectAllSafe(client, "piece_components", "order_index", { ascending: true }, []),
+    selectAll(client, "texts", "updated_at", { ascending: false }),
+    selectAll(client, "files", "updated_at", { ascending: false }),
+    selectAll(client, "publications", "published_at", { ascending: false }),
+    selectAll(client, "library", "created_at", { ascending: false }),
+    selectAiSettingsSafe(client)
+  ]);
+
+  return reconcileStateLinks({
+    ideas: ideas.map(fromIdeaRow),
+    pieces: pieces.map(fromPieceRow),
+    scripts: scripts.map(fromScriptRow),
+    pieceComponents: pieceComponents.map(fromPieceComponentRow),
+    texts: texts.map(fromTextRow),
+    files: files.map(fromFileRow),
+    publications: publications.map(fromPublicationRow),
+    library: library.map(fromLibraryRow),
+    ai: fromAiRow(aiSettings?.data)
+  });
 }
 
 function finalizeLoadedState(state) {
@@ -139,13 +291,13 @@ export async function saveState(state) {
   const client = requireSupabase();
   const syncErrors = [];
 
-  await tryRemoteSync(() => syncRows(client, "ideas", nextState.ideas.map(toIdeaRow)), "ideas", syncErrors);
-  await tryRemoteSync(() => syncRows(client, "pieces", nextState.pieces.map(toPieceRow)), "pieces", syncErrors);
-  await tryRemoteSync(() => syncRows(client, "scripts", nextState.scripts.map(toScriptRow)), "scripts", syncErrors);
-  await tryRemoteSync(() => syncRows(client, "piece_components", nextState.pieceComponents.map(toPieceComponentRow)), "piece_components", syncErrors);
-  await tryRemoteSync(() => syncRows(client, "texts", nextState.texts.map(toTextRow)), "texts", syncErrors);
-  await tryRemoteSync(() => syncRows(client, "files", nextState.files.map(toFileRow)), "files", syncErrors);
-  await tryRemoteSync(() => syncRows(client, "publications", nextState.publications.map(toPublicationRow)), "publications", syncErrors);
+  await tryRemoteSync(() => upsertRowsById(client, "ideas", nextState.ideas, toIdeaRow), "ideas", syncErrors);
+  await tryRemoteSync(() => upsertRowsById(client, "pieces", nextState.pieces, toPieceRow), "pieces", syncErrors);
+  await tryRemoteSync(() => upsertRowsById(client, "scripts", nextState.scripts, toScriptRow), "scripts", syncErrors);
+  await tryRemoteSync(() => syncPieceComponents(client, nextState.pieces, nextState.pieceComponents), "piece_components", syncErrors);
+  await tryRemoteSync(() => upsertRowsById(client, "texts", nextState.texts, toTextRow), "texts", syncErrors);
+  await tryRemoteSync(() => upsertRowsById(client, "files", nextState.files, toFileRow), "files", syncErrors);
+  await tryRemoteSync(() => upsertRowsById(client, "publications", nextState.publications, toPublicationRow), "publications", syncErrors);
   await tryRemoteSync(() => upsertRows(client, "library", nextState.library.map(toLibraryRow).filter(Boolean), "category,name"), "library", syncErrors);
   await tryRemoteSync(() => upsertRows(client, "ai_settings", [toAiRow(nextState.ai)]), "ai_settings", syncErrors);
   await tryRemoteSync(() => syncInstagramMediaLinks(client, nextState.pieces), "instagram_media", syncErrors);
@@ -153,6 +305,57 @@ export async function saveState(state) {
   if (syncErrors.length) {
     throw new Error(`Parte do salvamento remoto falhou: ${syncErrors.join(", ")}. Os dados ficaram no cache local deste navegador.`);
   }
+}
+
+export async function deletePieceRemote(pieceId) {
+  if (!pieceId) return;
+  if (!isSupabaseConfigured) return;
+
+  const client = requireSupabase();
+  await deleteRemoteByField(client, "texts", "piece_id", pieceId);
+  await deleteRemoteById(client, "pieces", pieceId);
+}
+
+export async function deleteIdeaRemote(ideaId) {
+  if (!ideaId) return;
+  if (!isSupabaseConfigured) return;
+
+  const client = requireSupabase();
+  await deleteRemoteById(client, "ideas", ideaId);
+}
+
+export async function deleteLibraryItemRemote(itemId) {
+  if (!itemId) return;
+  if (!isSupabaseConfigured) return;
+
+  const client = requireSupabase();
+  await deleteRemoteById(client, "library", itemId);
+}
+
+export async function deleteTextsByPieceRemote(pieceId) {
+  if (!pieceId) return;
+  if (!isSupabaseConfigured) return;
+
+  const client = requireSupabase();
+  await deleteRemoteByField(client, "texts", "piece_id", pieceId);
+}
+
+export async function deletePieceComponentRemote(componentId) {
+  if (!componentId) return;
+  if (!isSupabaseConfigured) return;
+
+  const client = requireSupabase();
+  await deleteRemoteById(client, "piece_components", componentId);
+}
+
+async function deleteRemoteById(client, table, id) {
+  const { error } = await client.from(table).delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function deleteRemoteByField(client, table, field, value) {
+  const { error } = await client.from(table).delete().eq(field, value);
+  if (error) throw error;
 }
 
 export { getTemplateDefaults } from "./scriptStructures.js";
@@ -174,6 +377,10 @@ async function selectAllSafe(client, table, orderColumn, orderOptions, fallback)
     return await selectAll(client, table, orderColumn, orderOptions);
   } catch (error) {
     console.warn(`Tabela ${table} indisponível no Supabase.`, error);
+    const criticalTables = ["pieces", "scripts", "piece_components"];
+    if (criticalTables.includes(table) && Array.isArray(fallback) && fallback.length === 0) {
+      throw new Error(`Tabela crítica "${table}" falhou ao carregar. Sync abortado para proteger os dados.`);
+    }
     return fallback;
   }
 }
@@ -184,33 +391,6 @@ async function selectAiSettingsSafe(client) {
   } catch (error) {
     console.warn("Tabela ai_settings indisponível no Supabase.", error);
     return { data: null, error: null };
-  }
-}
-
-async function syncRows(client, table, rows) {
-  const { data: existingRows, error: selectError } = await client.from(table).select("id");
-  if (selectError) throw selectError;
-
-  const existingIds = new Set((existingRows || []).map(row => row.id));
-  const nextIds = new Set(rows.map(row => row.id));
-  const idsToDelete = [...existingIds].filter(id => !nextIds.has(id));
-  const rowsToInsert = rows.filter(row => !existingIds.has(row.id));
-  const rowsToUpdate = rows.filter(row => existingIds.has(row.id));
-
-  if (idsToDelete.length) {
-    const { error } = await client.from(table).delete().in("id", idsToDelete);
-    if (error) throw error;
-  }
-
-  if (rowsToInsert.length) {
-    const { error } = await client.from(table).insert(rowsToInsert);
-    if (error) throw error;
-  }
-
-  for (const row of rowsToUpdate) {
-    const { id, ...changes } = row;
-    const { error } = await client.from(table).update(changes).eq("id", id);
-    if (error) throw error;
   }
 }
 
@@ -345,6 +525,7 @@ function fromScriptRow(row) {
 }
 
 function toScriptRow(script) {
+  if (!script?.id || String(script.id).startsWith("local-")) return null;
   return {
     id: script.id,
     piece_id: script.pieceId,
@@ -646,6 +827,11 @@ function loadLocalState() {
 }
 
 function saveLocalState(state) {
+  if (!hasMeaningfulContent(state)) {
+    console.warn("saveLocalState: estado sem conteúdo — abortando para não sobrescrever cache local.");
+    return;
+  }
+
   try {
     globalThis.localStorage?.setItem(LOCAL_STATE_KEY, JSON.stringify({
       ...state,

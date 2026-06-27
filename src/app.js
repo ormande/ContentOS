@@ -9,6 +9,12 @@ import {
   loadState,
   pieceComponentSlots,
   platformRules,
+  mergeLocalStateToSupabase,
+  deleteIdeaRemote,
+  deleteLibraryItemRemote,
+  deletePieceComponentRemote,
+  deletePieceRemote,
+  deleteTextsByPieceRemote,
   saveState
 } from "./data/store.js";
 import {
@@ -120,8 +126,12 @@ let instagramDatePreset = "30d";
 let instagramCustomStart = "";
 let instagramCustomEnd = "";
 let isInstagramSyncing = false;
+let isMergingLocalCache = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
 let captionDraft = null;
+let expandedCaptionPieceId = null;
+/** @type {Record<string, string>} */
+let captionPlatformTabs = {};
 let editingIdeaId = null;
 let editingLibraryItemId = null;
 let pendingLibrarySelection = null;
@@ -178,6 +188,24 @@ async function init() {
 
   bindGlobalEvents();
   render();
+}
+
+function showTransientNotice(title, message) {
+  contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(message)}</span></div>`);
+}
+
+async function runRemoteDelete(action) {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    console.error(error);
+    showTransientNotice(
+      "Não foi possível excluir no Supabase.",
+      error instanceof Error ? error.message : "Verifique a conexão e tente novamente."
+    );
+    return false;
+  }
 }
 
 async function persistAndRender(options = {}) {
@@ -502,7 +530,8 @@ function renderBriefPhase(piece, idea) {
 }
 
 function renderScriptPhase(piece, script, idea) {
-  const currentScript = script || createLocalScript(piece.id);
+  const savedScript = getScriptByPiece(piece.id);
+  const currentScript = savedScript || createLocalScript(piece.id);
   const structureComponent = getPrimaryComponent(piece.id, "script_structure");
   const structureItem = state.library.find(item => item.id === structureComponent?.libraryItemId);
   const templateKey = structureItem
@@ -516,7 +545,6 @@ function renderScriptPhase(piece, script, idea) {
   const hookComponent = getPrimaryComponent(piece.id, "hook");
   const formatComponent = getPrimaryComponent(piece.id, "format");
   const selectedCtas = getPieceComponents(piece.id, "cta").map(component => component.libraryItemId).filter(Boolean);
-  const canImproveScript = hasScriptContent(currentScript);
   const scriptAiState = aiDrafts.script;
   const isGeneratingScript = scriptAiState.loading && scriptAiState.pieceId === piece.id;
 
@@ -605,7 +633,7 @@ function renderScriptPhase(piece, script, idea) {
           `)}
           <div class="inline-actions">
             <button class="ghost-action compact" type="button" data-script-generate="${piece.id}" ${isGeneratingScript ? "disabled" : ""}>${isGeneratingScript ? "Gerando..." : "Gerar pela IA"}</button>
-            <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${canImproveScript && !isGeneratingScript ? "" : "disabled"}>${isGeneratingScript ? "Gerando..." : "Melhorar com IA"}</button>
+            <button class="ghost-action compact" type="button" data-script-improve="${piece.id}" ${isGeneratingScript ? "disabled" : ""}>${isGeneratingScript ? "Gerando..." : "Melhorar com IA"}</button>
           </div>
         </div>
         <div class="phase-form-footer">
@@ -719,7 +747,10 @@ function renderDistributionPhase(piece) {
             <span>Esta peça só lê métricas reais do Instagram, usando a Meta Graph API. Não há integração com TikTok Analytics nem YouTube Studio por enquanto.</span>
           </div>
           ${renderField("ID da mídia no Instagram", `<input name="igMediaId" value="${escapeHtml(piece.distribution.igMediaId)}" placeholder="ig_media_id" />`, { hint: "Identificador da publicação real no Instagram." })}
-          ${renderField("Permalink", `<input name="permalink" value="${escapeHtml(piece.distribution.permalink)}" placeholder="https://www.instagram.com/p/..." />`)}
+          ${(() => {
+            const permalinkMeta = getPermalinkFieldMeta(piece);
+            return renderField("Permalink", `<input name="permalink" data-permalink-input="${piece.id}" value="${escapeHtml(piece.distribution.permalink)}" placeholder="https://www.instagram.com/p/..." />`, permalinkMeta);
+          })()}
         </div>
         <div class="phase-form-footer">
           <button class="primary-action" type="submit">Salvar vínculo real</button>
@@ -912,57 +943,138 @@ function renderTexts(query) {
         <button class="primary-action" type="submit" ${selectedCaptionPiece && !isGeneratingCaption ? "" : "disabled"}>${isGeneratingCaption ? "Gerando..." : "Gerar com IA"}</button>
       </form>
 
-      ${captionDraft ? renderCaptionForm(captionDraft, { mode: "draft" }) : ""}
+      ${captionDraft ? renderCaptionListItem(captionDraft, { mode: "draft", forceExpanded: true }) : ""}
 
-      <section class="stack">
-        ${captions.length ? captions.map(caption => renderCaptionForm(caption, { mode: "saved" })).join("") : emptyState("Nenhuma legenda salva ainda.", "Gere o primeiro pacote de legendas para uma peça.")}
+      <section class="panel caption-list-panel">
+        <div class="caption-list-head">
+          <h3>Legendas salvas</h3>
+          <span>${captions.length} conteúdo(s)</span>
+        </div>
+        ${captions.length ? `
+          <div class="caption-list">
+            ${captions.map(caption => renderCaptionListItem(caption, { mode: "saved" })).join("")}
+          </div>
+        ` : emptyState("Nenhuma legenda salva ainda.", "Gere o primeiro pacote de legendas para uma peça.")}
       </section>
     </div>
   `;
 }
 
-function renderCaptionForm(caption, { mode }) {
-  const pieceTitle = findPieceTitle(caption.pieceId);
+function renderCaptionListItem(caption, { mode, forceExpanded = false }) {
+  const pieceId = caption.pieceId || "";
+  const pieceTitle = findPieceTitle(pieceId);
+  const isExpanded = forceExpanded || expandedCaptionPieceId === pieceId;
+  const platforms = getCaptionPlatforms(caption);
+  const platformLabels = platforms.map(platform => platformRules[platform].label).join(" · ");
+
+  return `
+    <article class="caption-list-item ${isExpanded ? "expanded" : ""} ${mode === "draft" ? "is-draft" : ""}">
+      ${mode === "draft" ? `
+        <div class="caption-list-row is-static">
+          <span class="caption-list-title">${escapeHtml(pieceTitle)}</span>
+          <span class="caption-list-meta">Rascunho da IA</span>
+          <span class="caption-list-meta">${escapeHtml(platformLabels)}</span>
+        </div>
+      ` : `
+        <button class="caption-list-row" type="button" data-caption-toggle="${escapeHtml(pieceId)}" aria-expanded="${isExpanded ? "true" : "false"}">
+          <span class="caption-list-title">${escapeHtml(pieceTitle)}</span>
+          <span class="caption-list-meta">${escapeHtml(platformLabels || "Sem redes")}</span>
+          <span class="caption-list-meta">${formatDateTime(caption.updatedAt)}</span>
+          <span class="caption-list-chevron" aria-hidden="true">${isExpanded ? "▾" : "▸"}</span>
+        </button>
+      `}
+      ${isExpanded ? renderCaptionForm(caption, { mode, embedded: true }) : ""}
+    </article>
+  `;
+}
+
+function getCaptionPlatforms(caption) {
+  const platforms = [];
+  if (String(caption.instagramCaption || "").trim()) platforms.push("instagram");
+  if (String(caption.tiktokCaption || "").trim()) platforms.push("tiktok");
+  if (String(caption.ytTitle || caption.ytDescription || caption.ytTags || "").trim()) platforms.push("shorts");
+
+  if (platforms.length) return platforms;
+
+  const piece = state.pieces.find(item => item.id === caption.pieceId);
+  if (piece?.platforms?.length) return [...piece.platforms];
+  return ["instagram", "tiktok", "shorts"];
+}
+
+function getActiveCaptionPlatformTab(pieceId, platforms) {
+  const current = captionPlatformTabs[pieceId];
+  if (current && platforms.includes(current)) return current;
+  return platforms[0] || "instagram";
+}
+
+function renderCaptionForm(caption, { mode, embedded = false }) {
+  const pieceId = caption.pieceId || "";
+  const pieceTitle = findPieceTitle(pieceId);
   const instagramRule = platformRules.instagram;
   const tiktokRule = platformRules.tiktok;
   const shortsRule = platformRules.shorts;
+  const platforms = getCaptionPlatforms(caption);
+  const activePlatform = getActiveCaptionPlatformTab(pieceId, platforms);
   const instagramCount = caption.instagramCaption?.length || 0;
   const tiktokCount = caption.tiktokCaption?.length || 0;
   const instagramTags = countCaptionHashtags(caption.instagramCaption);
   const tiktokTags = countCaptionHashtags(caption.tiktokCaption);
 
   return `
-    <form class="panel stack caption-bundle-card" data-caption-form="${mode}" data-caption-id="${escapeHtml(caption.id || "")}" data-caption-piece="${escapeHtml(caption.pieceId || "")}">
-      <div class="item-topline">
-        <span>${escapeHtml(pieceTitle)}</span>
-        <strong>${mode === "draft" ? "Rascunho da IA" : formatDateTime(caption.updatedAt)}</strong>
+    <form class="${embedded ? "caption-bundle-body" : "panel stack caption-bundle-card"}" data-caption-form="${mode}" data-caption-id="${escapeHtml(caption.id || "")}" data-caption-piece="${escapeHtml(pieceId)}">
+      ${!embedded ? `
+        <div class="item-topline">
+          <span>${escapeHtml(pieceTitle)}</span>
+          <strong>${mode === "draft" ? "Rascunho da IA" : formatDateTime(caption.updatedAt)}</strong>
+        </div>
+      ` : ""}
+
+      <div class="caption-platform-tabs" role="tablist" aria-label="Redes sociais">
+        ${platforms.map(platform => `
+          <button
+            type="button"
+            class="${activePlatform === platform ? "active" : ""}"
+            role="tab"
+            aria-selected="${activePlatform === platform ? "true" : "false"}"
+            data-caption-platform-tab="${platform}"
+            data-caption-piece-tab="${escapeHtml(pieceId)}"
+          >${platformRules[platform].label}</button>
+        `).join("")}
       </div>
 
-      ${renderFieldGroup("Instagram", "Título, corpo e hashtags no mesmo campo, separados por linha em branco.", `
-        ${renderField("Legenda", `<textarea name="instagramCaption" class="caption-block-field" maxlength="${instagramRule.characterLimit}" placeholder="Título chamativo&#10;&#10;Corpo do texto&#10;&#10;#tag1 #tag2">${escapeHtml(caption.instagramCaption || "")}</textarea>`, {
-          hint: `${instagramCount}/${instagramRule.characterLimit} caracteres • ${instagramTags}/${instagramRule.hashtagLimit} hashtags`
-        })}
-      `)}
+      <div class="caption-platform-panels">
+        <div class="caption-platform-panel ${activePlatform === "instagram" ? "active" : ""}" data-caption-platform-panel="instagram">
+          ${renderFieldGroup("Instagram", platformRules.instagram.note, `
+            ${renderField("Legenda", `<textarea name="instagramCaption" class="caption-block-field" maxlength="${instagramRule.characterLimit}" placeholder="Título chamativo&#10;&#10;Corpo do texto&#10;&#10;#tag1 #tag2">${escapeHtml(caption.instagramCaption || "")}</textarea>`, {
+              hint: `${instagramCount}/${instagramRule.characterLimit} caracteres • ${instagramTags}/${instagramRule.hashtagLimit} hashtags`
+            })}
+          `)}
+        </div>
 
-      ${renderFieldGroup("TikTok", "Mesmo formato do Instagram: bloco único com quebras de linha.", `
-        ${renderField("Legenda", `<textarea name="tiktokCaption" class="caption-block-field" maxlength="${tiktokRule.characterLimit}" placeholder="Título chamativo&#10;&#10;Corpo do texto&#10;&#10;#tag1 #tag2">${escapeHtml(caption.tiktokCaption || "")}</textarea>`, {
-          hint: `${tiktokCount}/${tiktokRule.characterLimit} caracteres • ${tiktokTags}/${tiktokRule.hashtagLimit} hashtags`
-        })}
-      `)}
+        <div class="caption-platform-panel ${activePlatform === "tiktok" ? "active" : ""}" data-caption-platform-panel="tiktok">
+          ${renderFieldGroup("TikTok", platformRules.tiktok.note, `
+            ${renderField("Legenda", `<textarea name="tiktokCaption" class="caption-block-field" maxlength="${tiktokRule.characterLimit}" placeholder="Título chamativo&#10;&#10;Corpo do texto&#10;&#10;#tag1 #tag2">${escapeHtml(caption.tiktokCaption || "")}</textarea>`, {
+              hint: `${tiktokCount}/${tiktokRule.characterLimit} caracteres • ${tiktokTags}/${tiktokRule.hashtagLimit} hashtags`
+            })}
+          `)}
+        </div>
 
-      ${renderFieldGroup("YouTube Shorts", "Três campos separados para publicação no YouTube.", `
-        ${renderField("Título", `<input name="ytTitle" maxlength="${shortsRule.titleLimit}" value="${escapeHtml(caption.ytTitle || "")}" placeholder="Título SEO com hashtags (até 100 caracteres)" />`, {
-          hint: `${(caption.ytTitle || "").length}/${shortsRule.titleLimit} caracteres`
-        })}
-        ${renderField("Descrição", `<textarea name="ytDescription" class="caption-block-field" maxlength="${shortsRule.characterLimit}" placeholder="Descrição completa sobre o vídeo">${escapeHtml(caption.ytDescription || "")}</textarea>`, {
-          hint: `${(caption.ytDescription || "").length}/${shortsRule.characterLimit} caracteres`
-        })}
-        ${renderField("Tags", `<input name="ytTags" maxlength="${shortsRule.tagsLimit}" value="${escapeHtml(caption.ytTags || "")}" placeholder="palavra-chave, outra palavra, tema do vídeo" />`, {
-          hint: `${(caption.ytTags || "").length}/${shortsRule.tagsLimit} caracteres`
-        })}
-      `)}
+        <div class="caption-platform-panel ${activePlatform === "shorts" ? "active" : ""}" data-caption-platform-panel="shorts">
+          ${renderFieldGroup("YouTube Shorts", platformRules.shorts.note, `
+            ${renderField("Título", `<input name="ytTitle" maxlength="${shortsRule.titleLimit}" value="${escapeHtml(caption.ytTitle || "")}" placeholder="Título SEO com hashtags (até 100 caracteres)" />`, {
+              hint: `${(caption.ytTitle || "").length}/${shortsRule.titleLimit} caracteres`
+            })}
+            ${renderField("Descrição", `<textarea name="ytDescription" class="caption-block-field" maxlength="${shortsRule.characterLimit}" placeholder="Descrição completa sobre o vídeo">${escapeHtml(caption.ytDescription || "")}</textarea>`, {
+              hint: `${(caption.ytDescription || "").length}/${shortsRule.characterLimit} caracteres`
+            })}
+            ${renderField("Tags", `<input name="ytTags" maxlength="${shortsRule.tagsLimit}" value="${escapeHtml(caption.ytTags || "")}" placeholder="palavra-chave, outra palavra, tema do vídeo" />`, {
+              hint: `${(caption.ytTags || "").length}/${shortsRule.tagsLimit} caracteres`
+            })}
+          `)}
+        </div>
+      </div>
 
-      <div class="inline-actions">
+      <div class="inline-actions caption-form-actions">
         <button class="primary-action" type="submit">${mode === "draft" ? "Salvar legendas" : "Atualizar legendas"}</button>
         ${mode === "draft" ? `<button class="ghost-action compact" type="button" data-discard-caption-draft>Descartar rascunho</button>` : `
           <button class="ghost-action compact danger-text" type="button" data-delete-caption="${escapeHtml(caption.id)}">Excluir</button>
@@ -979,10 +1091,14 @@ function renderAiPreview({ title, state: previewState, visible }) {
     <section class="panel stack">
       <h3>${title}</h3>
       ${previewState.error ? `<div class="notice warning"><strong>Erro na geração</strong><span>${escapeHtml(previewState.error)}</span></div>` : ""}
-      ${previewState.text ? `
-        <pre class="ai-preview">${escapeHtml(previewState.text)}${previewState.loading ? `<span class="stream-cursor" aria-hidden="true"></span>` : ""}</pre>
-      ` : previewState.loading ? `
-        <pre class="ai-preview"><span class="stream-cursor" aria-hidden="true"></span></pre>
+      ${previewState.loading || previewState.text ? `
+        <textarea
+          class="ai-preview"
+          data-ai-preview-textarea="script"
+          rows="16"
+          ${previewState.loading ? "readonly" : ""}
+        >${escapeHtml(previewState.text)}</textarea>
+        ${previewState.loading ? `<span class="stream-cursor" aria-hidden="true"></span>` : ""}
       ` : ""}
     </section>
   `;
@@ -1254,7 +1370,15 @@ function renderDashboard(query) {
         </div>
         <div class="dashboard-actions">
           ${instagramDashboard.account ? "" : `<a class="ghost-action dashboard-connect" href="/api/instagram/connect">Conectar Instagram</a>`}
-          <button class="primary-action" type="button" data-sync-instagram>${isInstagramSyncing ? "Sincronizando..." : "Atualizar insights"}</button>
+          <button
+            class="icon-action ${isMergingLocalCache ? "is-spinning" : ""}"
+            type="button"
+            data-merge-local-cache
+            aria-label="Enviar cache local ao Supabase"
+            title="Envia ao Supabase o cache local: novos itens e edições. Nada é apagado do banco."
+            ${isMergingLocalCache ? "disabled" : ""}
+          >${icon("refresh")}</button>
+          <button class="primary-action" type="button" data-sync-instagram ${isInstagramSyncing || isMergingLocalCache ? "disabled" : ""}>${isInstagramSyncing ? "Sincronizando..." : "Atualizar insights"}</button>
         </div>
       </div>
 
@@ -1477,6 +1601,18 @@ function attachSectionEvents() {
   attachLibraryEvents();
   attachDashboardEvents();
   attachSettingsEvents();
+  attachAiPreviewEvents();
+}
+
+function attachAiPreviewEvents() {
+  document.querySelectorAll("[data-ai-preview-textarea]").forEach(element => {
+    const textarea = /** @type {HTMLTextAreaElement} */ (element);
+    textarea.addEventListener("input", () => {
+      if (textarea.dataset.aiPreviewTextarea === "script") {
+        aiDrafts.script.text = textarea.value;
+      }
+    });
+  });
 }
 
 function attachSettingsEvents() {
@@ -1571,6 +1707,7 @@ function attachIdeaEvents() {
         danger: true
       });
       if (!confirmed) return;
+      if (!(await runRemoteDelete(() => deleteIdeaRemote(ideaId)))) return;
       state.ideas = state.ideas.filter(item => item.id !== ideaId);
       state.pieces = state.pieces.map(piece => piece.ideaId === ideaId ? { ...piece, ideaId: null } : piece);
       if (editingIdeaId === ideaId) editingIdeaId = null;
@@ -1734,10 +1871,44 @@ function attachPieceEvents() {
       const piece = state.pieces.find(item => item.id === currentForm.dataset.pieceId);
       if (!piece) return;
       const formData = new FormData(currentForm);
-      piece.distribution.igMediaId = String(formData.get("igMediaId") || "").trim();
-      piece.distribution.permalink = String(formData.get("permalink") || "").trim();
+      const igMediaId = String(formData.get("igMediaId") || "").trim();
+      const permalink = normalizePermalinkValue(String(formData.get("permalink") || ""));
+
+      if (permalink) {
+        const duplicatePiece = findPieceWithDuplicatePermalink(permalink, piece.id);
+        if (duplicatePiece) {
+          const confirmed = await openConfirm({
+            title: "Permalink duplicado",
+            message: `Este permalink já está vinculado à peça "${duplicatePiece.title}". Deseja continuar mesmo assim?`,
+            confirmLabel: "Continuar",
+            cancelLabel: "Cancelar"
+          });
+          if (!confirmed) return;
+        }
+
+        if (isPermalinkSyncedInInstagram(permalink)) {
+          await openConfirm({
+            title: "Permalink sincronizado",
+            message: "Este permalink já foi sincronizado com os insights. Os dados aparecerão nos cards abaixo.",
+            confirmLabel: "Entendi",
+            cancelLabel: "Fechar"
+          });
+        }
+      }
+
+      piece.distribution.igMediaId = igMediaId;
+      piece.distribution.permalink = permalink;
+      upsertPublicationForPiece(piece, permalink);
       await persistAndRender({ reloadInstagram: true });
     });
+  });
+
+  document.querySelectorAll("[data-permalink-input]").forEach(inputElement => {
+    const input = /** @type {HTMLInputElement} */ (inputElement);
+    const pieceId = input.dataset.permalinkInput || "";
+    const refreshHint = () => updatePermalinkDuplicateHint(input, pieceId);
+    input.addEventListener("input", refreshHint);
+    input.addEventListener("change", refreshHint);
   });
 
   document.querySelectorAll("[data-add-component]").forEach(form => {
@@ -1779,7 +1950,10 @@ function attachPieceEvents() {
   document.querySelectorAll("[data-remove-component]").forEach(button => {
     const removeButton = /** @type {HTMLButtonElement} */ (button);
     removeButton.addEventListener("click", async () => {
-      state.pieceComponents = state.pieceComponents.filter(item => item.id !== removeButton.dataset.removeComponent);
+      const componentId = removeButton.dataset.removeComponent;
+      if (!componentId) return;
+      if (!(await runRemoteDelete(() => deletePieceComponentRemote(componentId)))) return;
+      state.pieceComponents = state.pieceComponents.filter(item => item.id !== componentId);
       await persistAndRender();
     });
   });
@@ -1789,6 +1963,7 @@ function attachPieceEvents() {
     actionButton.addEventListener("click", async () => {
       const piece = state.pieces.find(item => item.id === actionButton.dataset.scriptGenerate);
       if (!piece) return;
+      if (!(await confirmScriptAiGeneration(piece, "script"))) return;
       await generateScriptWithAi(piece.id, "script");
     });
   });
@@ -1798,6 +1973,8 @@ function attachPieceEvents() {
     actionButton.addEventListener("click", async () => {
       const piece = state.pieces.find(item => item.id === actionButton.dataset.scriptImprove);
       if (!piece) return;
+      syncScriptDraftFromForm(piece.id);
+      if (!(await confirmScriptAiGeneration(piece, "improve"))) return;
       await generateScriptWithAi(piece.id, "improve");
     });
   });
@@ -1814,6 +1991,7 @@ function attachPieceEvents() {
         danger: true
       });
       if (!confirmed) return;
+      if (!(await runRemoteDelete(() => deletePieceRemote(pieceId)))) return;
       state.pieces = state.pieces.filter(item => item.id !== pieceId);
       state.scripts = state.scripts.filter(item => item.pieceId !== pieceId);
       state.pieceComponents = state.pieceComponents.filter(item => item.pieceId !== pieceId);
@@ -1863,7 +2041,28 @@ function attachTextEvents() {
     const input = /** @type {HTMLInputElement} */ (event.currentTarget);
     selectedPieceId = input.value || null;
     captionDraft = null;
+    expandedCaptionPieceId = null;
     render();
+  });
+
+  document.querySelectorAll("[data-caption-toggle]").forEach(button => {
+    const toggleButton = /** @type {HTMLButtonElement} */ (button);
+    toggleButton.addEventListener("click", () => {
+      const pieceId = toggleButton.dataset.captionToggle || "";
+      expandedCaptionPieceId = expandedCaptionPieceId === pieceId ? null : pieceId;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-caption-platform-tab]").forEach(button => {
+    const tabButton = /** @type {HTMLButtonElement} */ (button);
+    tabButton.addEventListener("click", () => {
+      const pieceId = tabButton.dataset.captionPieceTab || "";
+      const platform = tabButton.dataset.captionPlatformTab || "";
+      if (!pieceId || !platform) return;
+      captionPlatformTabs[pieceId] = platform;
+      render();
+    });
   });
 
   document.querySelectorAll("[data-caption-form]").forEach(form => {
@@ -1887,6 +2086,7 @@ function attachTextEvents() {
 
   document.querySelector("[data-discard-caption-draft]")?.addEventListener("click", () => {
     captionDraft = null;
+    expandedCaptionPieceId = null;
     render();
   });
 
@@ -1903,7 +2103,12 @@ function attachTextEvents() {
         danger: true
       });
       if (!confirmed) return;
+      if (!(await runRemoteDelete(() => deleteTextsByPieceRemote(caption.pieceId)))) return;
       state.texts = state.texts.filter(item => item.pieceId !== caption.pieceId);
+      if (expandedCaptionPieceId === caption.pieceId) {
+        expandedCaptionPieceId = null;
+      }
+      delete captionPlatformTabs[caption.pieceId];
       if (captionDraft?.pieceId === caption.pieceId) {
         captionDraft = null;
       }
@@ -1977,6 +2182,7 @@ function attachLibraryEvents() {
         danger: true
       });
       if (!confirmed) return;
+      if (!(await runRemoteDelete(() => deleteLibraryItemRemote(itemId)))) return;
       state.library = state.library.filter(item => item.id !== itemId);
       state.pieceComponents = state.pieceComponents.map(component => component.libraryItemId === itemId ? { ...component, libraryItemId: null } : component);
       if (editingLibraryItemId === itemId) editingLibraryItemId = null;
@@ -2032,6 +2238,34 @@ function attachDashboardEvents() {
       console.error(error);
     } finally {
       isInstagramSyncing = false;
+      render();
+    }
+  });
+
+  const mergeButton = /** @type {HTMLButtonElement | null} */ (document.querySelector("[data-merge-local-cache]"));
+  mergeButton?.addEventListener("click", async () => {
+    isMergingLocalCache = true;
+    render();
+    try {
+      const previousPieceId = selectedPieceId;
+      const result = await mergeLocalStateToSupabase(state);
+      state = result.state;
+      selectedPieceId = state.pieces.some(piece => piece.id === previousPieceId)
+        ? previousPieceId
+        : state.pieces[0]?.id || null;
+
+      const parts = [];
+      if (result.insertedTotal) parts.push(`${result.insertedTotal} novo(s)`);
+      if (result.updatedTotal) parts.push(`${result.updatedTotal} atualizado(s)`);
+      const message = parts.length
+        ? `${parts.join(" e ")} enviado(s) ao Supabase. Nada foi apagado do banco.`
+        : "Nenhuma alteração pendente. O cache local foi alinhado com o Supabase.";
+      contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>Cache sincronizado.</strong><span>${escapeHtml(message)}</span></div>`);
+    } catch (error) {
+      console.error(error);
+      contentArea.insertAdjacentHTML("afterbegin", `<div class="empty-state compact"><strong>Não foi possível enviar o cache ao Supabase.</strong><span>${escapeHtml(error.message || "Verifique a conexão e tente novamente.")}</span></div>`);
+    } finally {
+      isMergingLocalCache = false;
       render();
     }
   });
@@ -2238,11 +2472,44 @@ function improveScriptFields(template, fields, piece) {
   return next;
 }
 
+async function confirmScriptAiGeneration(piece, mode) {
+  syncScriptDraftFromForm(piece.id);
+  const script = getScriptByPiece(piece.id);
+  const title = String(piece.title || "").trim();
+  const objective = String(piece.brief?.objective || "").trim();
+  const promise = String(piece.brief?.promise || "").trim();
+  const hasScript = Boolean(script && hasScriptContent(script));
+  const insufficientMessage = "O Brief e o Roteiro ainda não têm informações salvas. Preencha ao menos o título, a promessa do conteúdo e os campos do roteiro antes de gerar.";
+
+  if ((!title && !promise && !hasScript) || !title || !promise || !hasScript) {
+    await openConfirm({
+      title: "Informações insuficientes",
+      message: insufficientMessage,
+      confirmLabel: "Entendi",
+      singleAction: true
+    });
+    return false;
+  }
+
+  const templateLabel = getStructureLabel(script?.template || "storytelling");
+  const confirmTitle = mode === "improve" ? "Melhorar roteiro com IA" : "Gerar roteiro com IA";
+  const confirmLabel = mode === "improve" ? "Melhorar agora" : "Gerar agora";
+
+  return openConfirm({
+    title: confirmTitle,
+    message: `A IA vai usar:\n• Título: ${title}\n• Objetivo: ${objective || "Não informado"}\n• Promessa: ${promise}\n• Template: ${templateLabel}\n\nDeseja prosseguir ou prefere ajustar algo antes?`,
+    confirmLabel,
+    cancelLabel: "Ajustar antes"
+  });
+}
+
 async function generateScriptWithAi(pieceId, mode) {
   const piece = state.pieces.find(item => item.id === pieceId);
   if (!piece) return;
+  syncScriptDraftFromForm(pieceId);
   const idea = state.ideas.find(item => item.id === piece.ideaId) || null;
   const script = getOrCreateScript(piece.id);
+  const scriptSummary = getScriptSummary(piece.id);
   const scriptForm = /** @type {HTMLFormElement | null} */ (
     document.querySelector(`form[data-piece-form="script"][data-piece-id="${pieceId}"]`)
   );
@@ -2271,7 +2538,7 @@ async function generateScriptWithAi(pieceId, mode) {
         template: script.template,
         structure,
         fields: script.fields,
-        script_text: getScriptSummary(piece.id)
+        script_text: scriptSummary || buildScriptSummaryFromFields(script.fields)
       },
       context: {
         title: piece.title,
@@ -2369,6 +2636,8 @@ async function generateCaptionsWithAi(form) {
       onDone: fullText => {
         const parsed = parseAiJson(fullText);
         captionDraft = buildCaptionDraftFromAi(parsed, pieceId, platforms);
+        expandedCaptionPieceId = pieceId;
+        captionPlatformTabs[pieceId] = platforms[0] || "instagram";
         aiDrafts.caption = {
           ...aiDrafts.caption,
           loading: false,
@@ -2822,8 +3091,91 @@ function getPieceInstagramItems(pieceId) {
   return (instagramDashboard.contentItems || []).filter(item => {
     if (item.pieceId && item.pieceId === pieceId) return true;
     if (piece.distribution.igMediaId && item.instagramMediaId === piece.distribution.igMediaId) return true;
-    if (piece.distribution.permalink && item.permalink === piece.distribution.permalink) return true;
+    if (piece.distribution.permalink && permalinksMatch(item.permalink, piece.distribution.permalink)) return true;
     return false;
+  });
+}
+
+function normalizePermalinkValue(value) {
+  return String(value || "").trim();
+}
+
+function permalinksMatch(left, right) {
+  const leftValue = normalizePermalinkValue(left);
+  const rightValue = normalizePermalinkValue(right);
+  if (!leftValue || !rightValue) return false;
+  return leftValue === rightValue || leftValue.replace(/\/$/, "") === rightValue.replace(/\/$/, "");
+}
+
+function findPieceWithDuplicatePermalink(permalink, excludePieceId) {
+  const normalized = normalizePermalinkValue(permalink);
+  if (!normalized) return null;
+  return state.pieces.find(piece => (
+    piece.id !== excludePieceId
+    && permalinksMatch(piece.distribution?.permalink, normalized)
+  )) || null;
+}
+
+function isPermalinkSyncedInInstagram(permalink) {
+  const normalized = normalizePermalinkValue(permalink);
+  if (!normalized) return false;
+  return (instagramDashboard.contentItems || []).some(item => permalinksMatch(item.permalink, normalized));
+}
+
+function getPermalinkFieldMeta(piece, permalink = piece.distribution?.permalink) {
+  const duplicatePiece = findPieceWithDuplicatePermalink(permalink, piece.id);
+  if (!duplicatePiece) {
+    return {
+      hint: "URL completa da publicação no Instagram.",
+      className: ""
+    };
+  }
+  return {
+    hint: `Este permalink já está vinculado à peça "${duplicatePiece.title}".`,
+    className: "field-has-duplicate"
+  };
+}
+
+function updatePermalinkDuplicateHint(input, pieceId) {
+  const field = input.closest(".field");
+  const hint = field?.querySelector(".field-hint");
+  if (!field || !hint) return;
+
+  const meta = getPermalinkFieldMeta({ id: pieceId, distribution: { permalink: input.value } }, input.value);
+  field.classList.toggle("field-has-duplicate", Boolean(meta.className));
+  hint.textContent = meta.hint;
+}
+
+function createDefaultPublicationMetrics() {
+  return {
+    views: 0,
+    likes: 0,
+    saves: 0,
+    shares: 0,
+    comments: 0,
+    reach: 0,
+    profileViews: 0,
+    followers: 0,
+    impressions: 0
+  };
+}
+
+function upsertPublicationForPiece(piece, permalink) {
+  const existing = state.publications.find(item => item.pieceId === piece.id);
+  if (existing) {
+    existing.url = permalink;
+    return;
+  }
+
+  if (!permalink) return;
+
+  state.publications.unshift({
+    id: createId("publication"),
+    pieceId: piece.id,
+    platform: piece.platforms[0] || "instagram",
+    publishedAt: new Date().toISOString(),
+    url: permalink,
+    metrics: createDefaultPublicationMetrics()
   });
 }
 
@@ -2927,10 +3279,32 @@ function buildPiecePhaseStatus(piece) {
 }
 
 function hasScriptContent(script) {
+  if (!script) return false;
   return Object.values(script.fields || {}).some(value => {
     if (Array.isArray(value)) return value.length > 0;
     return String(value || "").trim();
   });
+}
+
+function syncScriptDraftFromForm(pieceId) {
+  const form = /** @type {HTMLFormElement | null} */ (
+    document.querySelector(`form[data-piece-form="script"][data-piece-id="${pieceId}"]`)
+  );
+  if (!form) return;
+
+  const structureItemId = String(new FormData(form).get("structureItemId") || "").trim();
+  if (!structureItemId) return;
+
+  const template = resolveTemplateKeyFromStructureId(structureItemId);
+  upsertScriptFromForm(pieceId, template, form);
+}
+
+function buildScriptSummaryFromFields(fields) {
+  return Object.values(fields || {})
+    .flatMap(value => (Array.isArray(value) ? value : [value]))
+    .map(item => String(item || "").trim())
+    .filter(Boolean)
+    .join(" ");
 }
 
 function readScriptFields(template, form) {
@@ -3358,11 +3732,7 @@ function getPieceTheme(piece) {
 function getScriptSummary(pieceId) {
   const script = getScriptByPiece(pieceId);
   if (!script) return "";
-  return Object.values(script.fields || {})
-    .flatMap(value => (Array.isArray(value) ? value : [value]))
-    .map(item => String(item || "").trim())
-    .filter(Boolean)
-    .join(" ");
+  return buildScriptSummaryFromFields(script.fields);
 }
 
 function renderPlatformCheckbox(name, selectedPlatforms) {
@@ -3702,7 +4072,8 @@ function icon(name) {
     list: `<svg viewBox="0 0 24 24" class="icon"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>`,
     check: `<svg viewBox="0 0 24 24" class="icon"><path d="m5 12 4 4L19 6"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" class="icon"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/></svg>`,
-    alert: `<svg viewBox="0 0 24 24" class="icon"><path d="M12 8v5"/><path d="M12 16h.01"/><path d="m10.3 4.3-.1.2-7 12.1A2 2 0 0 0 4.9 20h14.2a2 2 0 0 0 1.7-3.4l-7-12.1-.1-.2a2 2 0 0 0-3.4 0Z"/></svg>`
+    alert: `<svg viewBox="0 0 24 24" class="icon"><path d="M12 8v5"/><path d="M12 16h.01"/><path d="m10.3 4.3-.1.2-7 12.1A2 2 0 0 0 4.9 20h14.2a2 2 0 0 0 1.7-3.4l-7-12.1-.1-.2a2 2 0 0 0-3.4 0Z"/></svg>`,
+    refresh: `<svg viewBox="0 0 24 24" class="icon"><path d="M21 12a9 9 0 0 1-9 9"/><path d="M21 3v6h-6"/><path d="M3 12a9 9 0 0 1 9-9"/><path d="M3 21v-6h6"/></svg>`
   };
   return icons[name] || icons.chart;
 }

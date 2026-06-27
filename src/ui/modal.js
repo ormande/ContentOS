@@ -75,7 +75,7 @@ function mountModal({ title, bodyHtml, actionsHtml, onReady }) {
 }
 
 /**
- * @param {{ title?: string; message?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }} [options]
+ * @param {{ title?: string; message?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; singleAction?: boolean }} [options]
  * @returns {Promise<boolean>}
  */
 export function openConfirm({
@@ -83,17 +83,22 @@ export function openConfirm({
   message,
   confirmLabel = "Confirmar",
   cancelLabel = "Cancelar",
-  danger = false
+  danger = false,
+  singleAction = false
 } = {}) {
   return mountModal({
     title,
     bodyHtml: `<p class="modal-message">${escapeHtml(message)}</p>`,
-    actionsHtml: `
+    actionsHtml: singleAction
+      ? `<button class="primary-action ${danger ? "danger-action" : ""}" type="button" data-modal-confirm>${escapeHtml(confirmLabel)}</button>`
+      : `
       <button class="ghost-action" type="button" data-modal-cancel>${escapeHtml(cancelLabel)}</button>
       <button class="primary-action ${danger ? "danger-action" : ""}" type="button" data-modal-confirm>${escapeHtml(confirmLabel)}</button>
     `,
     onReady(root, close) {
-      root.querySelector("[data-modal-cancel]")?.addEventListener("click", () => close(false));
+      if (!singleAction) {
+        root.querySelector("[data-modal-cancel]")?.addEventListener("click", () => close(false));
+      }
       root.querySelector("[data-modal-confirm]")?.addEventListener("click", () => close(true));
       root.querySelector("[data-modal-confirm]")?.focus();
     }
