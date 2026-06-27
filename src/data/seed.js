@@ -1,6 +1,6 @@
-import { applyLibrarySeedIfEmpty } from "./librarySeed.js";
+import { applyLibrarySeed } from "./librarySeed.js";
 
-const result = applyLibrarySeedIfEmpty({
+const result = applyLibrarySeed({
   ideas: [],
   pieces: [],
   scripts: [],
@@ -13,7 +13,7 @@ const result = applyLibrarySeedIfEmpty({
 });
 
 if (result.seeded) {
-  console.log(`Seed da biblioteca: ${result.state.library.length} itens criados (somente em memória; use o app com Supabase para persistir).`);
+  console.log(`Seed da biblioteca: ${result.state.library.length} itens disponiveis apos complementar os padroes ausentes (somente em memoria; use o app com Supabase para persistir).`);
 } else {
-  console.log("Biblioteca já possui itens. Seed ignorado.");
+  console.log("Biblioteca ja estava completa para os itens padrao.");
 }

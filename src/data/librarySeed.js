@@ -6,24 +6,48 @@ const DEFAULT_PLATFORMS = ["instagram", "tiktok", "shorts"];
  * @param {ReturnType<import("./store.js").createEmptyState>} state
  * @returns {{ state: ReturnType<import("./store.js").createEmptyState>; seeded: boolean }}
  */
-export function applyLibrarySeedIfEmpty(state) {
-  if ((state.library || []).length > 0) {
-    return { state, seeded: false };
+export function applyLibrarySeed(state) {
+  const createdAt = new Date().toISOString();
+  const existingItems = Array.isArray(state.library) ? [...state.library] : [];
+  const missingEntries = buildLibrarySeedEntries()
+    .filter(entry => !existingItems.some(item => matchesSeedEntry(item, entry)))
+    .map(entry => ({
+      id: crypto.randomUUID(),
+      context: [],
+      platforms: [...DEFAULT_PLATFORMS],
+      notes: "",
+      example: "",
+      metadata: {},
+      createdAt,
+      ...entry
+    }));
+
+  state.library = [...missingEntries, ...existingItems];
+
+  return { state, seeded: missingEntries.length > 0 };
+}
+
+function matchesSeedEntry(item, entry) {
+  if (!item || !entry) return false;
+  if (item.category !== entry.category) return false;
+
+  if (entry.category === "estrutura_roteiro") {
+    const itemTemplate = String(item.metadata?.templateKey || "").trim();
+    const entryTemplate = String(entry.metadata?.templateKey || "").trim();
+    if (itemTemplate && entryTemplate) {
+      return itemTemplate === entryTemplate;
+    }
   }
 
-  const createdAt = new Date().toISOString();
-  state.library = buildLibrarySeedEntries().map(entry => ({
-    id: crypto.randomUUID(),
-    context: [],
-    platforms: [...DEFAULT_PLATFORMS],
-    notes: "",
-    example: "",
-    metadata: {},
-    createdAt,
-    ...entry
-  }));
+  return normalizeSeedToken(item.name) === normalizeSeedToken(entry.name);
+}
 
-  return { state, seeded: true };
+function normalizeSeedToken(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
 }
 
 export function buildLibrarySeedEntries() {

@@ -1,5 +1,5 @@
 import { isSupabaseConfigured, requireSupabase } from "./supabaseClient.js";
-import { applyLibrarySeedIfEmpty } from "./librarySeed.js";
+import { applyLibrarySeed } from "./librarySeed.js";
 import { getTemplateDefaults, normalizeScriptFieldsForTemplate } from "./scriptStructures.js";
 import { linkInstagramMediaToPieces } from "./instagramMediaLinks.js";
 
@@ -176,7 +176,7 @@ async function fetchRemoteState(client) {
 }
 
 function finalizeLoadedState(state) {
-  const { state: nextState, seeded } = applyLibrarySeedIfEmpty(reconcileStateLinks(state));
+  const { state: nextState, seeded } = applyLibrarySeed(reconcileStateLinks(state));
   if (seeded) {
     nextState.__librarySeeded = true;
   }
