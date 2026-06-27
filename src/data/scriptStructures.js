@@ -102,6 +102,28 @@ export const SCRIPT_STRUCTURES = {
       { key: "conteudoProprio", label: "Conteúdo próprio", multiline: true },
       { key: "diferencial", label: "Diferencial" }
     ]
+  },
+  b_roll_video_humor: {
+    label: "B-roll + Vídeo (Humor)",
+    fields: [
+      { key: "textHook", label: "Text hook", hint: "Texto de abertura que comanda a piada." },
+      { key: "situacaoCotidiana", label: "Situação cotidiana", multiline: true, hint: "Qual situação observacional está sendo mostrada?" },
+      { key: "viradaOuContraste", label: "Virada ou contraste", multiline: true, hint: "O que muda ou quebra a expectativa?" },
+      { key: "cenaPrincipalBroll", label: "Cena principal de b-roll", multiline: true },
+      { key: "cenaDeReforco", label: "Cena de reforço", multiline: true },
+      { key: "fechamentoVisual", label: "Fechamento visual", multiline: true, hint: "Imagem final que sela a piada." }
+    ]
+  },
+  voiceover_b_roll_humor: {
+    label: "Voiceover + B-roll (Humor)",
+    fields: [
+      { key: "textHook", label: "Text hook", hint: "Texto de abertura na tela." },
+      { key: "contexto", label: "Contexto", multiline: true, hint: "Situação inicial da história." },
+      { key: "oQueAconteceu", label: "O que aconteceu", multiline: true },
+      { key: "detalheObservacional", label: "Detalhe observacional", multiline: true, hint: "Ponto cotidiano que gera identificação." },
+      { key: "virada", label: "Virada", multiline: true, hint: "Momento em que a história fica engraçada." },
+      { key: "fechamento", label: "Fechamento", multiline: true }
+    ]
   }
 };
 
@@ -115,6 +137,14 @@ const LEGACY_NAME_MAP = [
   ["yapper", "yapper"],
   ["react", "react"],
   ["clone", "clone"],
+  ["b roll", "b_roll_video_humor"],
+  ["b-roll", "b_roll_video_humor"],
+  ["video + b roll", "b_roll_video_humor"],
+  ["broll + video", "b_roll_video_humor"],
+  ["voiceover", "voiceover_b_roll_humor"],
+  ["voz off", "voiceover_b_roll_humor"],
+  ["narracao + b roll", "voiceover_b_roll_humor"],
+  ["voiceover + b roll", "voiceover_b_roll_humor"],
   ["educa", "educacional"],
   ["story", "storytelling"]
 ];

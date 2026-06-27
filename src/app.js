@@ -902,7 +902,7 @@ function renderTexts(query) {
       </div>
 
       ${manualCaptionOpen ? `
-        <form class="panel stack" id="manualCaptionForm">
+        <form class="panel stack caption-overlay-panel" id="manualCaptionForm">
           <h3>Nova legenda manual</h3>
           <p>Escolha a peça e preencha as legendas por rede social.</p>
           ${renderField("Peça", renderCustomSelect({
@@ -919,7 +919,7 @@ function renderTexts(query) {
       ` : ""}
 
       ${captionGeneratorOpen ? `
-      <form class="panel stack" id="captionGeneratorForm">
+      <form class="panel stack caption-overlay-panel" id="captionGeneratorForm">
         <h3>Gerar legendas com IA</h3>
         <div class="notice">
           <strong>Fluxo unificado</strong>
@@ -2588,6 +2588,28 @@ function buildScriptFromIdea(template, piece, idea, existingFields = {}) {
         "2. Explique o passo principal com exemplo real.",
         "3. Feche com CTA objetivo."
       ]
+    };
+  }
+
+  if (template === "b_roll_video_humor") {
+    return {
+      textHook: existingFields.textHook || summarizeText(piece.title || piece.brief.promise || "Texto de abertura com humor observacional", 90),
+      situacaoCotidiana: existingFields.situacaoCotidiana || summarizeText(baseText, 140),
+      viradaOuContraste: existingFields.viradaOuContraste || "Mostre o contraste entre expectativa e realidade em um detalhe visual.",
+      cenaPrincipalBroll: existingFields.cenaPrincipalBroll || "B-roll principal mostrando a situação cotidiana em ação.",
+      cenaDeReforco: existingFields.cenaDeReforco || "Insira um segundo b-roll que amplifique a identificação ou o desconforto engraçado.",
+      fechamentoVisual: existingFields.fechamentoVisual || "Feche com a imagem mais reconhecível ou absurda da situação."
+    };
+  }
+
+  if (template === "voiceover_b_roll_humor") {
+    return {
+      textHook: existingFields.textHook || summarizeText(piece.title || piece.brief.promise || "Abertura curta na tela", 90),
+      contexto: existingFields.contexto || "Apresente rapidamente a situação antes da narração avançar.",
+      oQueAconteceu: existingFields.oQueAconteceu || summarizeText(baseText, 150),
+      detalheObservacional: existingFields.detalheObservacional || "Destaque o detalhe cotidiano que faz o público pensar 'isso acontece comigo'.",
+      virada: existingFields.virada || "Conte o momento em que a situação muda e fica engraçada.",
+      fechamento: existingFields.fechamento || "Feche com uma conclusão curta, seca e reconhecível."
     };
   }
 

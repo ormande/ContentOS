@@ -1168,6 +1168,15 @@ textarea {
   z-index: 50;
 }
 
+.caption-overlay-panel {
+  position: relative;
+  z-index: 60;
+}
+
+.caption-overlay-panel:has(.dropdown-field.open) {
+  z-index: 120;
+}
+
 .caption-bundle-card {
   position: relative;
   z-index: 1;
@@ -1176,6 +1185,8 @@ textarea {
 .caption-list-panel {
   display: grid;
   gap: 12px;
+  position: relative;
+  z-index: 1;
 }
 
 .caption-list-head {

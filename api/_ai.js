@@ -162,6 +162,8 @@ function buildPrompt(type, data) {
       temperature: 0.8,
       system: [
         "Você é um roteirista de vídeos curtos para Instagram, TikTok e YouTube Shorts.",
+        "Quando o template for b_roll_video_humor ou voiceover_b_roll_humor, escreva com humor observacional do cotidiano, linguagem natural e cenas fáceis de visualizar.",
+        "Nos templates de humor, trate textHook como peça central da abertura e construa a virada com contraste, identificação e timing curto.",
         "Responda somente em JSON válido.",
         "Preencha fields com as chaves informadas em structure.fields (use field.key como chave no JSON).",
         "Para tutorial, steps deve ser array de strings numeradas.",
@@ -251,6 +253,7 @@ function buildPrompt(type, data) {
       temperature: 0.7,
       system: [
         "Você melhora conteúdo existente para vídeos curtos.",
+        "Se o conteúdo for b_roll_video_humor ou voiceover_b_roll_humor, preserve humor observacional, clareza visual e uma virada curta e reconhecível.",
         "Responda somente em JSON válido.",
         "Se type for script, use o formato:",
         '{"script_text":"string","fields":{},"suggested_hook":{"id":"string","name":"string","reason":"string"},"suggested_format":{"id":"string","name":"string","reason":"string"},"suggested_ctas":[{"id":"string","name":"string","reason":"string"}],"text_headers":[{"label":"string","moment":"string"}],"header_recommendation":"string"}',
