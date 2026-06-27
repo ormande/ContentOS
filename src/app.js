@@ -132,9 +132,13 @@ let isInstagramSyncing = false;
 let isReloadingState = false;
 let instagramError = new URLSearchParams(window.location.search).get("instagram_error") || "";
 let captionDraft = null;
+let manualCaptionDraft = null;
+let captionGeneratorOpen = false;
+let manualCaptionOpen = false;
 let expandedCaptionPieceId = null;
 /** @type {Record<string, string>} */
 let captionPlatformTabs = {};
+let pendingSavedCaptionRestore = null;
 let editingIdeaId = null;
 let editingLibraryItemId = null;
 let libraryFormOpen = false;
@@ -245,6 +249,7 @@ function setSection(sectionId) {
 function render() {
   const section = sections.find(item => item.id === currentSection) || sections[0];
   const pieceFormSnapshots = currentSection === "pieces" ? snapshotPieceForms() : null;
+  const captionFormSnapshots = currentSection === "texts" ? snapshotCaptionForms() : null;
   sectionKicker.textContent = section.kicker;
   renderSectionTitle(section);
   renderNav();
@@ -266,6 +271,13 @@ function render() {
   if (pieceFormSnapshots?.size) {
     restorePieceForms(pieceFormSnapshots, skipPieceFormPhases);
     skipPieceFormPhases = new Set();
+  }
+  if (captionFormSnapshots?.size) {
+    restoreCaptionForms(captionFormSnapshots);
+  }
+  if (pendingSavedCaptionRestore) {
+    restorePendingSavedCaptionForm(pendingSavedCaptionRestore);
+    pendingSavedCaptionRestore = null;
   }
   applyPendingLibrarySelection();
   attachSectionEvents();
@@ -884,6 +896,29 @@ function renderTexts(query) {
         `).join("")}
       </section>
 
+      <div class="panel caption-actions">
+        <button class="primary-action" type="button" data-open-manual-caption>Adicionar legenda</button>
+        <button class="ghost-action" type="button" data-open-caption-generator>Gerar com IA</button>
+      </div>
+
+      ${manualCaptionOpen ? `
+        <form class="panel stack" id="manualCaptionForm">
+          <h3>Nova legenda manual</h3>
+          <p>Escolha a peça e preencha as legendas por rede social.</p>
+          ${renderField("Peça", renderCustomSelect({
+            name: "pieceId",
+            value: selectedCaptionPiece?.id || "",
+            placeholder: "Selecione uma peça",
+            options: state.pieces.map(piece => ({ value: piece.id, label: piece.title }))
+          }))}
+          <div class="inline-actions">
+            <button class="primary-action" type="submit">Continuar</button>
+            <button class="ghost-action compact" type="button" data-cancel-manual-caption>Cancelar</button>
+          </div>
+        </form>
+      ` : ""}
+
+      ${captionGeneratorOpen ? `
       <form class="panel stack" id="captionGeneratorForm">
         <h3>Gerar legendas com IA</h3>
         <div class="notice">
@@ -945,10 +980,15 @@ function renderTexts(query) {
         ${captionAiState.error && captionAiState.pieceId === selectedCaptionPiece?.id ? `
           <div class="notice warning"><strong>Erro na geração</strong><span>${escapeHtml(captionAiState.error)}</span></div>
         ` : ""}
-        <button class="primary-action" type="submit" ${selectedCaptionPiece && !isGeneratingCaption ? "" : "disabled"}>${isGeneratingCaption ? "Gerando..." : "Gerar com IA"}</button>
+        <div class="inline-actions">
+          <button class="primary-action" type="submit" ${selectedCaptionPiece && !isGeneratingCaption ? "" : "disabled"}>${isGeneratingCaption ? "Gerando..." : "Gerar com IA"}</button>
+          <button class="ghost-action compact" type="button" data-cancel-caption-generator>Cancelar</button>
+        </div>
       </form>
+      ` : ""}
 
       ${captionDraft ? renderCaptionListItem(captionDraft, { mode: "draft", forceExpanded: true }) : ""}
+      ${manualCaptionDraft ? renderCaptionListItem(manualCaptionDraft, { mode: "manual", forceExpanded: true }) : ""}
 
       <section class="panel caption-list-panel">
         <div class="caption-list-head">
@@ -959,7 +999,7 @@ function renderTexts(query) {
           <div class="caption-list">
             ${captions.map(caption => renderCaptionListItem(caption, { mode: "saved" })).join("")}
           </div>
-        ` : emptyState("Nenhuma legenda salva ainda.", "Gere o primeiro pacote de legendas para uma peça.")}
+        ` : emptyState("Nenhuma legenda salva ainda.", "Adicione manualmente ou gere com IA para uma peça.")}
       </section>
     </div>
   `;
@@ -973,11 +1013,11 @@ function renderCaptionListItem(caption, { mode, forceExpanded = false }) {
   const platformLabels = platforms.map(platform => platformRules[platform].label).join(" · ");
 
   return `
-    <article class="caption-list-item ${isExpanded ? "expanded" : ""} ${mode === "draft" ? "is-draft" : ""}">
-      ${mode === "draft" ? `
+    <article class="caption-list-item ${isExpanded ? "expanded" : ""} ${mode === "draft" ? "is-draft" : ""} ${mode === "manual" ? "is-manual" : ""}">
+      ${mode === "draft" || mode === "manual" ? `
         <div class="caption-list-row is-static">
           <span class="caption-list-title">${escapeHtml(pieceTitle)}</span>
-          <span class="caption-list-meta">Rascunho da IA</span>
+          <span class="caption-list-meta">${mode === "draft" ? "Rascunho da IA" : "Nova legenda manual"}</span>
           <span class="caption-list-meta">${escapeHtml(platformLabels)}</span>
         </div>
       ` : `
@@ -1024,6 +1064,9 @@ function renderCaptionForm(caption, { mode, embedded = false }) {
   const tiktokCount = caption.tiktokCaption?.length || 0;
   const instagramTags = countCaptionHashtags(caption.instagramCaption);
   const tiktokTags = countCaptionHashtags(caption.tiktokCaption);
+  const saveLabel = mode === "draft" || mode === "manual"
+    ? `Salvar ${platformRules[activePlatform].label}`
+    : `Atualizar ${platformRules[activePlatform].label}`;
 
   return `
     <form class="${embedded ? "caption-bundle-body" : "panel stack caption-bundle-card"}" data-caption-form="${mode}" data-caption-id="${escapeHtml(caption.id || "")}" data-caption-piece="${escapeHtml(pieceId)}">
@@ -1080,10 +1123,12 @@ function renderCaptionForm(caption, { mode, embedded = false }) {
       </div>
 
       <div class="inline-actions caption-form-actions">
-        <button class="primary-action" type="submit">${mode === "draft" ? "Salvar legendas" : "Atualizar legendas"}</button>
-        ${mode === "draft" ? `<button class="ghost-action compact" type="button" data-discard-caption-draft>Descartar rascunho</button>` : `
+        <button class="primary-action" type="submit">${escapeHtml(saveLabel)}</button>
+        ${mode === "draft" ? `<button class="ghost-action compact" type="button" data-discard-caption-draft>Descartar rascunho</button>` : ""}
+        ${mode === "manual" ? `<button class="ghost-action compact" type="button" data-discard-manual-caption>Cancelar</button>` : ""}
+        ${mode === "saved" ? `
           <button class="ghost-action compact danger-text" type="button" data-delete-caption="${escapeHtml(caption.id)}">Excluir</button>
-        `}
+        ` : ""}
       </div>
     </form>
   `;
@@ -2062,6 +2107,51 @@ function attachPieceEvents() {
 }
 
 function attachTextEvents() {
+  document.querySelector("[data-open-manual-caption]")?.addEventListener("click", () => {
+    manualCaptionOpen = true;
+    captionGeneratorOpen = false;
+    render();
+  });
+
+  document.querySelector("[data-open-caption-generator]")?.addEventListener("click", () => {
+    captionGeneratorOpen = true;
+    manualCaptionOpen = false;
+    render();
+  });
+
+  document.querySelector("[data-cancel-manual-caption]")?.addEventListener("click", () => {
+    manualCaptionOpen = false;
+    render();
+  });
+
+  document.querySelector("[data-cancel-caption-generator]")?.addEventListener("click", () => {
+    captionGeneratorOpen = false;
+    render();
+  });
+
+  const manualCaptionForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#manualCaptionForm"));
+  manualCaptionForm?.addEventListener("submit", event => {
+    event.preventDefault();
+    const formData = new FormData(manualCaptionForm);
+    const pieceId = String(formData.get("pieceId") || "").trim();
+    if (!pieceId) return;
+
+    const existing = getPieceCaption(pieceId);
+    if (existing) {
+      manualCaptionOpen = false;
+      manualCaptionDraft = null;
+      expandedCaptionPieceId = pieceId;
+      render();
+      return;
+    }
+
+    manualCaptionDraft = createEmptyCaptionForPiece(pieceId);
+    manualCaptionOpen = false;
+    expandedCaptionPieceId = pieceId;
+    captionPlatformTabs[pieceId] = getCaptionPlatforms(manualCaptionDraft)[0] || "instagram";
+    render();
+  });
+
   const generatorForm = /** @type {HTMLFormElement | null} */ (document.querySelector("#captionGeneratorForm"));
   generatorForm?.addEventListener("submit", event => {
     event.preventDefault();
@@ -2103,21 +2193,32 @@ function attachTextEvents() {
       const currentForm = /** @type {HTMLFormElement} */ (event.currentTarget);
       const pieceId = currentForm.dataset.captionPiece || null;
       if (!pieceId) return;
+      const mode = currentForm.dataset.captionForm || "saved";
       const formData = new FormData(currentForm);
-      upsertPieceCaption(pieceId, {
-        instagramCaption: String(formData.get("instagramCaption") || "").trim(),
-        tiktokCaption: String(formData.get("tiktokCaption") || "").trim(),
-        ytTitle: String(formData.get("ytTitle") || "").trim(),
-        ytDescription: String(formData.get("ytDescription") || "").trim(),
-        ytTags: String(formData.get("ytTags") || "").trim()
-      }, currentForm.dataset.captionId || null);
+      const activePlatform = getActiveCaptionPlatformFromForm(currentForm);
+      const formSnapshot = snapshotSingleCaptionForm(currentForm);
+      upsertPieceCaption(pieceId, buildCaptionPayloadForPlatform(activePlatform, formData), currentForm.dataset.captionId || null);
+      if (mode === "draft" || mode === "manual") {
+        pendingSavedCaptionRestore = {
+          pieceId,
+          fields: formSnapshot
+        };
+      }
       captionDraft = null;
+      manualCaptionDraft = null;
+      expandedCaptionPieceId = pieceId;
       await persistAndRender();
     });
   });
 
   document.querySelector("[data-discard-caption-draft]")?.addEventListener("click", () => {
     captionDraft = null;
+    expandedCaptionPieceId = null;
+    render();
+  });
+
+  document.querySelector("[data-discard-manual-caption]")?.addEventListener("click", () => {
+    manualCaptionDraft = null;
     expandedCaptionPieceId = null;
     render();
   });
@@ -2143,6 +2244,9 @@ function attachTextEvents() {
       delete captionPlatformTabs[caption.pieceId];
       if (captionDraft?.pieceId === caption.pieceId) {
         captionDraft = null;
+      }
+      if (manualCaptionDraft?.pieceId === caption.pieceId) {
+        manualCaptionDraft = null;
       }
       await persistAndRender();
     });
@@ -2676,6 +2780,7 @@ async function generateCaptionsWithAi(form) {
       onDone: fullText => {
         const parsed = parseAiJson(fullText);
         captionDraft = buildCaptionDraftFromAi(parsed, pieceId, platforms);
+        captionGeneratorOpen = false;
         expandedCaptionPieceId = pieceId;
         captionPlatformTabs[pieceId] = platforms[0] || "instagram";
         aiDrafts.caption = {
@@ -2865,14 +2970,24 @@ function legacyTiktokCaptionApp(text) {
   return parts.join("\n\n");
 }
 
+function createEmptyCaptionForPiece(pieceId) {
+  return {
+    id: createId("text"),
+    pieceId,
+    instagramCaption: "",
+    tiktokCaption: "",
+    ytTitle: "",
+    ytDescription: "",
+    ytTags: "",
+    updatedAt: ""
+  };
+}
+
 function upsertPieceCaption(pieceId, data, captionId = null) {
   const existing = state.texts.find(text => text.pieceId === pieceId) || null;
   const next = {
-    instagramCaption: data.instagramCaption || "",
-    tiktokCaption: data.tiktokCaption || "",
-    ytTitle: data.ytTitle || "",
-    ytDescription: data.ytDescription || "",
-    ytTags: data.ytTags || "",
+    ...(existing ? normalizeCaptionRecordApp(existing) : createEmptyCaptionForPiece(pieceId)),
+    ...Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)),
     updatedAt: new Date().toISOString()
   };
 
@@ -2894,6 +3009,32 @@ function upsertPieceCaption(pieceId, data, captionId = null) {
   };
   state.texts.unshift(created);
   return created;
+}
+
+function buildCaptionPayloadForPlatform(platform, formData) {
+  if (platform === "shorts") {
+    return {
+      ytTitle: String(formData.get("ytTitle") || "").trim(),
+      ytDescription: String(formData.get("ytDescription") || "").trim(),
+      ytTags: String(formData.get("ytTags") || "").trim()
+    };
+  }
+
+  if (platform === "tiktok") {
+    return {
+      tiktokCaption: String(formData.get("tiktokCaption") || "").trim()
+    };
+  }
+
+  return {
+    instagramCaption: String(formData.get("instagramCaption") || "").trim()
+  };
+}
+
+function getActiveCaptionPlatformFromForm(form) {
+  const activeTab = form.querySelector(".caption-platform-tabs [data-caption-platform-tab].active");
+  const activePlatform = /** @type {HTMLButtonElement | null} */ (activeTab);
+  return activePlatform?.dataset.captionPlatformTab || "instagram";
 }
 
 function countCaptionHashtags(value) {
@@ -3018,6 +3159,61 @@ function restorePieceForms(snapshots, skipKeys = new Set()) {
       }
     });
   });
+}
+
+function snapshotCaptionForms() {
+  const snapshots = new Map();
+  document.querySelectorAll("form[data-caption-form]").forEach(formElement => {
+    const form = /** @type {HTMLFormElement} */ (formElement);
+    const pieceId = form.dataset.captionPiece || "";
+    const mode = form.dataset.captionForm || "";
+    if (!pieceId || !mode) return;
+
+    snapshots.set(`${pieceId}:${mode}`, snapshotSingleCaptionForm(form));
+  });
+  return snapshots;
+}
+
+function snapshotSingleCaptionForm(form) {
+  return {
+    activePlatform: getActiveCaptionPlatformFromForm(form),
+    instagramCaption: /** @type {HTMLTextAreaElement | null} */ (form.querySelector('[name="instagramCaption"]'))?.value || "",
+    tiktokCaption: /** @type {HTMLTextAreaElement | null} */ (form.querySelector('[name="tiktokCaption"]'))?.value || "",
+    ytTitle: /** @type {HTMLInputElement | null} */ (form.querySelector('[name="ytTitle"]'))?.value || "",
+    ytDescription: /** @type {HTMLTextAreaElement | null} */ (form.querySelector('[name="ytDescription"]'))?.value || "",
+    ytTags: /** @type {HTMLInputElement | null} */ (form.querySelector('[name="ytTags"]'))?.value || ""
+  };
+}
+
+function restoreCaptionForms(snapshots) {
+  snapshots.forEach((fields, key) => {
+    const [pieceId, mode] = key.split(":");
+    const form = /** @type {HTMLFormElement | null} */ (document.querySelector(`form[data-caption-form="${mode}"][data-caption-piece="${pieceId}"]`));
+    if (!form) return;
+
+    setCaptionFieldValue(form, "instagramCaption", fields.instagramCaption);
+    setCaptionFieldValue(form, "tiktokCaption", fields.tiktokCaption);
+    setCaptionFieldValue(form, "ytTitle", fields.ytTitle);
+    setCaptionFieldValue(form, "ytDescription", fields.ytDescription);
+    setCaptionFieldValue(form, "ytTags", fields.ytTags);
+
+    if (fields.activePlatform) {
+      captionPlatformTabs[pieceId] = fields.activePlatform;
+    }
+  });
+}
+
+function restorePendingSavedCaptionForm(snapshot) {
+  const form = /** @type {HTMLFormElement | null} */ (document.querySelector(`form[data-caption-form="saved"][data-caption-piece="${snapshot.pieceId}"]`));
+  if (!form) return;
+  restoreCaptionForms(new Map([[`${snapshot.pieceId}:saved`, snapshot.fields]]));
+}
+
+function setCaptionFieldValue(form, name, value) {
+  const element = form.querySelector(`[name="${name}"]`);
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    element.value = value || "";
+  }
 }
 
 function updateCustomSelectFromValue(field, value) {

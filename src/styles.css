@@ -1210,6 +1210,17 @@ textarea {
   border-color: rgba(13, 148, 136, 0.28);
 }
 
+.caption-list-item.is-manual {
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+.caption-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .caption-list-row {
   width: 100%;
   display: grid;

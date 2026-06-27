@@ -380,51 +380,68 @@ async function syncInstagramAccount(supabase, account) {
 
     let snapshotsCreated = accountSnapshotError ? 0 : 1;
 
-    const mediaResponse = await graphGet(`/${account.ig_user_id}/media`, {
-      fields: "id,caption,media_type,media_product_type,permalink,thumbnail_url,timestamp",
-      limit: "50",
-      access_token: account.access_token
-    }, getGraphBaseUrlForAccount(account));
+    const [{ data: existingMediaRows, error: existingMediaError }, { data: snapshotRows, error: snapshotError }] = await Promise.all([
+      supabase
+        .from("instagram_media")
+        .select("id, ig_media_id, piece_id, published_at")
+        .eq("account_id", account.id),
+      supabase
+        .from("instagram_insight_snapshots")
+        .select("media_id, captured_at")
+        .eq("account_id", account.id)
+        .eq("source_type", "media")
+        .order("captured_at", { ascending: false })
+        .limit(2000)
+    ]);
+
+    if (existingMediaError) throw existingMediaError;
+    if (snapshotError) throw snapshotError;
+
+    const existingByIgId = new Map((existingMediaRows || []).map(row => [row.ig_media_id, row]));
+    const lastInsightByMediaId = new Map();
+    for (const row of snapshotRows || []) {
+      if (row.media_id && !lastInsightByMediaId.has(row.media_id)) {
+        lastInsightByMediaId.set(row.media_id, row.captured_at);
+      }
+    }
+
+    const remoteMedia = await fetchAccountMediaList(account);
+    const syncPlan = buildInstagramSyncPlan(remoteMedia, existingByIgId, lastInsightByMediaId);
 
     let mediaSynced = 0;
+    let insightsRefreshed = 0;
+    let insightsSkipped = 0;
 
-    for (const media of mediaResponse.data || []) {
-      const mediaType = classifyMedia(media);
-      const { data: savedMedia, error: mediaError } = await supabase
-        .from("instagram_media")
-        .upsert({
-          account_id: account.id,
-          ig_media_id: media.id,
-          caption: media.caption || null,
-          media_type: mediaType,
-          permalink: media.permalink || null,
-          thumbnail_url: media.thumbnail_url || null,
-          published_at: media.timestamp || null,
-          raw: media
-        }, { onConflict: "ig_media_id" })
-        .select()
-        .single();
+    for (const entry of syncPlan.metadataOnly) {
+      await upsertInstagramMediaRow(supabase, account, entry.media, entry.existing?.id || null);
+      mediaSynced += 1;
+    }
 
-      if (mediaError) throw mediaError;
+    await mapWithConcurrency(syncPlan.withInsights, 5, async entry => {
+      const savedMedia = await upsertInstagramMediaRow(supabase, account, entry.media, entry.existing?.id || null);
       mediaSynced += 1;
 
-      const insightPayload = await getMediaInsights(media.id, account.access_token, account);
+      const insightPayload = await getMediaInsights(entry.media.id, account.access_token, account);
       const metrics = normalizeInsightPayload(insightPayload);
-
-      const { error: snapshotError } = await supabase
+      const { error: mediaSnapshotError } = await supabase
         .from("instagram_insight_snapshots")
         .insert({
           account_id: account.id,
           media_id: savedMedia.id,
           source_type: "media",
-          content_type: mediaType,
+          content_type: classifyMedia(entry.media),
           metric_date: new Date().toISOString().slice(0, 10),
           metrics,
           raw: insightPayload
         });
 
-      if (!snapshotError) snapshotsCreated += 1;
-    }
+      if (!mediaSnapshotError) {
+        snapshotsCreated += 1;
+        insightsRefreshed += 1;
+      }
+    });
+
+    insightsSkipped = syncPlan.skipped;
 
     await supabase
       .from("instagram_accounts")
@@ -443,7 +460,7 @@ async function syncInstagramAccount(supabase, account) {
 
     await relinkInstagramMediaPieces(supabase);
 
-    return { mediaSynced, snapshotsCreated };
+    return { mediaSynced, snapshotsCreated, insightsRefreshed, insightsSkipped };
   } catch (error) {
     await supabase
       .from("instagram_sync_runs")
@@ -456,6 +473,142 @@ async function syncInstagramAccount(supabase, account) {
 
     throw error;
   }
+}
+
+const INSTAGRAM_SYNC_RECENT_DAYS = 90;
+const INSTAGRAM_SYNC_STALE_HOURS = 24;
+const INSTAGRAM_SYNC_MAX_INSIGHTS = 60;
+
+async function fetchAccountMediaList(account) {
+  const collected = [];
+  const baseUrl = getGraphBaseUrlForAccount(account);
+
+  let payload = await graphGet(`/${account.ig_user_id}/media`, {
+    fields: "id,caption,media_type,media_product_type,permalink,thumbnail_url,timestamp",
+    limit: "50",
+    access_token: account.access_token
+  }, baseUrl);
+
+  collected.push(...(payload.data || []));
+  let nextUrl = payload.paging?.next || null;
+
+  while (nextUrl && collected.length < 200) {
+    payload = await graphGetFromUrl(nextUrl);
+    collected.push(...(payload.data || []));
+    nextUrl = payload.paging?.next || null;
+  }
+
+  return collected;
+}
+
+function buildInstagramSyncPlan(remoteMedia, existingByIgId, lastInsightByMediaId) {
+  const metadataOnly = [];
+  const withInsights = [];
+  let skipped = 0;
+  const refreshCandidates = [];
+
+  for (const media of remoteMedia) {
+    const existing = existingByIgId.get(media.id) || null;
+    if (!existing) {
+      withInsights.push({ media, existing, priority: 0 });
+      continue;
+    }
+
+    if (shouldRefreshInstagramInsights(existing, lastInsightByMediaId.get(existing.id))) {
+      refreshCandidates.push({
+        media,
+        existing,
+        priority: existing.piece_id ? 0 : 1,
+        publishedAt: Date.parse(existing.published_at || media.timestamp || "") || 0
+      });
+      continue;
+    }
+
+    metadataOnly.push({ media, existing });
+    skipped += 1;
+  }
+
+  refreshCandidates.sort((left, right) => {
+    if (left.priority !== right.priority) return left.priority - right.priority;
+    return right.publishedAt - left.publishedAt;
+  });
+
+  withInsights.push(...refreshCandidates.slice(0, INSTAGRAM_SYNC_MAX_INSIGHTS));
+  skipped += Math.max(0, refreshCandidates.length - INSTAGRAM_SYNC_MAX_INSIGHTS);
+
+  return { metadataOnly, withInsights, skipped };
+}
+
+function shouldRefreshInstagramInsights(existing, lastCapturedAt) {
+  if (existing.piece_id) return true;
+
+  const publishedAt = Date.parse(existing.published_at || "") || 0;
+  const recentCutoff = Date.now() - INSTAGRAM_SYNC_RECENT_DAYS * 24 * 60 * 60 * 1000;
+  if (publishedAt >= recentCutoff) return true;
+
+  if (!lastCapturedAt) return true;
+
+  const staleCutoff = Date.now() - INSTAGRAM_SYNC_STALE_HOURS * 60 * 60 * 1000;
+  return Date.parse(lastCapturedAt) < staleCutoff;
+}
+
+async function upsertInstagramMediaRow(supabase, account, media, existingId = null) {
+  const mediaType = classifyMedia(media);
+  const row = {
+    account_id: account.id,
+    ig_media_id: media.id,
+    caption: media.caption || null,
+    media_type: mediaType,
+    permalink: media.permalink || null,
+    thumbnail_url: media.thumbnail_url || null,
+    published_at: media.timestamp || null,
+    raw: media
+  };
+
+  if (existingId) {
+    const { data, error } = await supabase
+      .from("instagram_media")
+      .update(row)
+      .eq("id", existingId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from("instagram_media")
+    .upsert(row, { onConflict: "ig_media_id" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  if (!items.length) return [];
+
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }));
+
+  return results;
+}
+
+async function graphGetFromUrl(url) {
+  const response = await fetch(url);
+  const payload = await response.json();
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error?.message || "Erro na Graph API.");
+  }
+  return payload;
 }
 
 async function getAccountInsights(account) {
@@ -491,15 +644,20 @@ async function getAccountInsights(account) {
     }
   ];
 
-  for (const request of requests) {
+  const results = await Promise.all(requests.map(async request => {
     try {
       const payload = await graphGet(`/${account.ig_user_id}/insights`, request.params, baseUrl);
-      responses.push(...(payload.data || []));
+      return { metric: request.metric, data: payload.data || [] };
     } catch (error) {
-      errors.push({
-        metric: request.metric,
-        error: error.message
-      });
+      return { metric: request.metric, error: error.message };
+    }
+  }));
+
+  for (const result of results) {
+    if (result.error) {
+      errors.push({ metric: result.metric, error: result.error });
+    } else {
+      responses.push(...result.data);
     }
   }
 
